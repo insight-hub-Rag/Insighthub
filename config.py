@@ -1,3 +1,4 @@
+from pathlib import Path
 from pydantic_settings import BaseSettings
 
 
@@ -18,7 +19,12 @@ class Settings(BaseSettings):
     jira_api_token: str = ""
     jira_project_keys: str = ""
     jira_max_results: int = 50
-
+    # ── SharePoint ─────────────────────────────────────────────────────────────
+    sharepoint_tenant_id: str = ""
+    sharepoint_client_id: str = ""
+    sharepoint_client_secret: str = ""
+    sharepoint_site_url: str = ""
+    sharepoint_list_title: str = ""
     # ── Embedding : stratégie active ────────────────────────────────────
     # "local"   → sentence-transformers, modèle téléchargé et exécuté en local
     # "bedrock" → AWS Bedrock (Titan Embed), nécessite des credentials AWS
@@ -38,7 +44,7 @@ class Settings(BaseSettings):
         return [p.strip() for p in self.jira_project_keys.split(",") if p.strip()]
 
     class Config:
-        env_file = ".env"
+        env_file = str(Path(__file__).resolve().parent / ".env")
         extra = "ignore"
 
 
