@@ -9,6 +9,8 @@ from app.connectors.jira.pipeline import JiraConnector
 from app.connectors.jira.transformer import JiraTransformer
 from app.connectors.sharepoint.pipeline import SharePointConnector
 from app.connectors.sharepoint.transformer import SharePointTransformer
+from app.connectors.confluence.pipeline import ConfluenceConnector
+from app.connectors.confluence.transformer import ConfluenceTransformer
 # from app.connectors.servicenow.pipeline import ServiceNowConnector
 # from app.connectors.servicenow.transformer import ServiceNowTransformer
 from app.db.vector_store import VectorStore
@@ -27,6 +29,7 @@ class SyncRequest(BaseModel):
     project_key:   Optional[str] = None
     list_title:    Optional[str] = None
     table:         Optional[str] = None
+    space_key:     Optional[str] = None
     updated_after: Optional[str] = None
 
 
@@ -58,6 +61,15 @@ def _build_sharepoint_pipeline(request: SyncRequest) -> IngestionPipeline:
     )
 
 
+def _build_confluence_pipeline(request: SyncRequest) -> IngestionPipeline:
+    return IngestionPipeline(
+        connector=ConfluenceConnector(space_key=request.space_key or request.project_key),
+        transformer=ConfluenceTransformer(),
+        embedder=Embedder(),
+        store=VectorStore(),
+    )
+
+
 def _build_servicenow_pipeline(request: SyncRequest) -> IngestionPipeline:
     return IngestionPipeline(
         connector=ServiceNowConnector(table=request.table),
@@ -71,6 +83,7 @@ def _build_servicenow_pipeline(request: SyncRequest) -> IngestionPipeline:
 PIPELINE_FACTORIES = {
     "jira":        _build_jira_pipeline,
     "sharepoint":  _build_sharepoint_pipeline,
+    "confluence":  _build_confluence_pipeline,
     "servicenow":  _build_servicenow_pipeline,
 }
 
@@ -86,7 +99,7 @@ async def health() -> dict[str, str]:
 async def sync_source(source: str, request: SyncRequest) -> dict:
     """
     Lance le pipeline d ingestion pour la source donnée.
-    Sources disponibles : jira | sharepoint | servicenow
+    Sources disponibles : jira | sharepoint | confluence | servicenow
     """
     factory = PIPELINE_FACTORIES.get(source)
     if factory is None:
@@ -126,7 +139,6 @@ async def search(request: SearchRequest) -> dict:
     3. Génère une réponse avec Groq LLM (si generate=True)
     """
     try:
-        # 1. Retrieval
         retriever = Retriever()
         chunks    = retriever.search(
             query          = request.question,
@@ -135,7 +147,6 @@ async def search(request: SearchRequest) -> dict:
             min_similarity = request.min_similarity,
         )
 
-        # 2. Retrieval only (sans génération LLM)
         if not request.generate:
             return {
                 "question": request.question,
@@ -152,7 +163,6 @@ async def search(request: SearchRequest) -> dict:
                 ],
             }
 
-        # 3. RAG complet avec génération
         generator = Generator()
         response  = generator.generate(request.question, chunks)
 

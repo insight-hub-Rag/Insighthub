@@ -15,6 +15,7 @@ SOURCES = {
     "jira":        "jira",
     "servicenow":  "servicenow",
     "sharepoint":  "sharepoint",
+    "confluence":  "confluence",
 }
 
 _model = None

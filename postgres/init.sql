@@ -40,7 +40,8 @@ CREATE INDEX IF NOT EXISTS idx_sync_history_source
 INSERT INTO public.ingestion_sources (source_type, display_name, enabled) VALUES
     ('jira', 'Jira', TRUE),
     ('servicenow', 'ServiceNow', FALSE),
-    ('sharepoint', 'SharePoint', FALSE)
+    ('sharepoint', 'SharePoint', FALSE),
+    ('confluence', 'Confluence', TRUE),
 ON CONFLICT (source_type) DO NOTHING;
 
 
@@ -80,3 +81,39 @@ CREATE INDEX IF NOT EXISTS idx_jira_embeddings_document_id
 -- Index vectoriel pour la recherche par similarité (HNSW : bon compromis vitesse/précision).
 CREATE INDEX IF NOT EXISTS idx_jira_embeddings_vector
     ON jira.embeddings USING hnsw (embedding vector_cosine_ops);
+    -- ------------------------------------------------------------
+-- SCHÉMA CONFLUENCE — tout ce qui est spécifique à la source Confluence
+-- ------------------------------------------------------------
+
+CREATE SCHEMA IF NOT EXISTS confluence;
+
+-- Un document = une page Confluence (granularité métier).
+CREATE TABLE IF NOT EXISTS confluence.documents (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    external_id   TEXT NOT NULL,           -- id natif de la page Confluence
+    title         TEXT NOT NULL,
+    metadata      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (external_id)
+);
+
+-- Un chunk = un fragment de texte vectorisé (corps de la page).
+CREATE TABLE IF NOT EXISTS confluence.embeddings (
+    chunk_id      TEXT PRIMARY KEY,         -- ex: 'confluence-123456-0'
+    document_id   UUID NOT NULL REFERENCES confluence.documents(id) ON DELETE CASCADE,
+    content       TEXT NOT NULL,
+    embedding     vector(384) NOT NULL,      -- 384 = dimension du modèle all-MiniLM-L6-v2 (cf. config.py)
+    metadata      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_confluence_documents_external_id
+    ON confluence.documents (external_id);
+
+CREATE INDEX IF NOT EXISTS idx_confluence_embeddings_document_id
+    ON confluence.embeddings (document_id);
+
+-- Index vectoriel pour la recherche par similarité (HNSW).
+CREATE INDEX IF NOT EXISTS idx_confluence_embeddings_vector
+    ON confluence.embeddings USING hnsw (embedding vector_cosine_ops);
