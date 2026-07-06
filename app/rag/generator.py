@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 
 from config import settings
 from app.core.models import SearchResult, RAGResponse
@@ -9,13 +10,6 @@ logger = logging.getLogger(__name__)
 
 
 class Generator:
-    """
-    Génère une réponse en utilisant un LLM.
-    Stratégie selon settings.use_bedrock :
-      - False → Groq llama (dev, gratuit)
-      - True  → AWS Bedrock Amazon Nova (prod)
-    Fallback automatique vers Groq si Bedrock échoue.
-    """
 
     def generate(
         self,
@@ -33,12 +27,18 @@ class Generator:
 
         messages = build_prompt(question, chunks)
 
+        t0 = time.time()
         if settings.use_bedrock and settings.aws_access_key_id:
             logger.info("[Generator] Utilisation AWS Bedrock")
             answer, model = self._generate_bedrock(messages)
         else:
             logger.info("[Generator] Utilisation Groq")
             answer, model = self._generate_groq(messages)
+        t_llm = time.time() - t0
+
+        logger.info(
+            f"[Generator] LLM={t_llm*1000:.1f}ms | model={model}"
+        )
 
         sources = [
             {
@@ -86,9 +86,8 @@ class Generator:
                 aws_secret_access_key = settings.aws_secret_access_key,
             )
 
-            # Amazon Nova Micro — modèle actuel, pas de formulaire requis
             response = client.converse(
-                modelId = "us.amazon.nova-micro-v1:0",
+                modelId  = "us.amazon.nova-micro-v1:0",
                 system   = [{"text": messages[0]["content"]}],
                 messages = [
                     {

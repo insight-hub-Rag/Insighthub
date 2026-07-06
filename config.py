@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     # ── Embedding ───────────────────────────────────────────────────────
     embedding_provider:  str = "local"
     embedding_model:     str = "all-MiniLM-L6-v2"
-    embedding_dimension: int = 384
+    embedding_dimension: int = 1024
 
     # ── AWS Bedrock ─────────────────────────────────────────────────────
     aws_access_key_id:     str  = ""

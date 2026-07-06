@@ -1,31 +1,30 @@
 import logging
+import time
 from typing import Optional
 
 import psycopg2
 from pgvector.psycopg2 import register_vector
-from sentence_transformers import SentenceTransformer
 
 from config import settings
-from app.core.models import SearchResult
+from app.core.models import Chunk, SearchResult
 
 logger = logging.getLogger(__name__)
 
-# Sources disponibles et leurs schémas
 SOURCES = {
-    "jira":        "jira",
-    "servicenow":  "servicenow",
-    "sharepoint":  "sharepoint",
+    "jira":       "jira",
+    "servicenow": "servicenow",
+    "sharepoint": "sharepoint",
 }
 
-_model = None
+_embedder = None
 
 
-def _get_model() -> SentenceTransformer:
-    global _model
-    if _model is None:
-        logger.info(f"[Retriever] Chargement modèle : {settings.embedding_model}")
-        _model = SentenceTransformer(settings.embedding_model)
-    return _model
+def _get_embedder():
+    global _embedder
+    if _embedder is None:
+        from app.ingestion.embeddings.embedder import Embedder
+        _embedder = Embedder()
+    return _embedder
 
 
 def _get_connection():
@@ -35,11 +34,6 @@ def _get_connection():
 
 
 class Retriever:
-    """
-    Recherche sémantique dans pgvector.
-    Cherche dans toutes les sources actives ou une source spécifique.
-    Retourne les top_k chunks les plus similaires à la question.
-    """
 
     def search(
         self,
@@ -48,58 +42,54 @@ class Retriever:
         top_k: Optional[int] = None,
         min_similarity: Optional[float] = None,
     ) -> list[SearchResult]:
-        """
-        Recherche les chunks les plus similaires à la question.
-
-        Args:
-            query:          question de l'utilisateur
-            source:         filtrer par source ('jira', 'servicenow', etc.)
-                           Si None, cherche dans toutes les sources
-            top_k:          nombre de résultats à retourner
-            min_similarity: seuil minimum de similarité cosine (0 à 1)
-
-        Returns:
-            Liste de SearchResult triés par similarité décroissante
-        """
         top_k          = top_k or settings.rag_top_k
         min_similarity = min_similarity or settings.rag_min_similarity
 
-        # 1. Embedder la question
-        model     = _get_model()
-        embedding = model.encode(
-            query,
-            normalize_embeddings=True,
-        ).tolist()
-
-        logger.info(
-            f"[Retriever] Recherche | query='{query[:50]}' | "
-            f"source={source or 'toutes'} | top_k={top_k}"
+        # Embedding de la question
+        t0         = time.time()
+        embedder   = _get_embedder()
+        temp_chunk = Chunk(
+            chunk_id    = "query",
+            document_id = "query",
+            source_type = "query",
+            content     = query,
         )
+        embedder.embed_chunks([temp_chunk])
+        embedding = temp_chunk.embedding
+        t_embed   = time.time() - t0
 
-        # 2. Choisir les sources à chercher
+        # Recherche pgvector
+        t1 = time.time()
         sources_to_search = (
             {source: SOURCES[source]}
             if source and source in SOURCES
             else SOURCES
         )
 
-        # 3. Chercher dans chaque source
         all_results = []
-        conn = _get_connection()
+        conn        = _get_connection()
         try:
             for source_type, schema in sources_to_search.items():
                 results = self._search_in_schema(
-                    conn, schema, source_type, embedding, top_k, min_similarity
+                    conn, schema, source_type,
+                    embedding, top_k, min_similarity,
                 )
                 all_results.extend(results)
         finally:
             conn.close()
 
-        # 4. Trier par similarité et retourner top_k
+        t_search = time.time() - t1
+        t_total  = time.time() - t0
+
         all_results.sort(key=lambda x: x.similarity, reverse=True)
         final = all_results[:top_k]
 
-        logger.info(f"[Retriever] {len(final)} chunks trouvés")
+        logger.info(
+            f"[Retriever] {len(final)} chunks | "
+            f"embed={t_embed*1000:.1f}ms | "
+            f"search={t_search*1000:.1f}ms | "
+            f"total={t_total*1000:.1f}ms"
+        )
         return final
 
     def _search_in_schema(
@@ -113,6 +103,16 @@ class Retriever:
     ) -> list[SearchResult]:
         try:
             with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_schema = %s
+                        AND table_name = 'embeddings'
+                    )
+                """, (schema,))
+                if not cur.fetchone()[0]:
+                    return []
+
                 cur.execute(f"""
                     SELECT
                         e.chunk_id,
@@ -130,20 +130,19 @@ class Retriever:
 
                 rows = cur.fetchall()
 
-            results = []
-            for row in rows:
-                chunk_id, doc_id, title, content, metadata, similarity = row
-                results.append(SearchResult(
-                    chunk_id    = chunk_id,
+            return [
+                SearchResult(
+                    chunk_id    = row[0],
                     source_type = source_type,
-                    document_id = doc_id,
-                    content     = content,
-                    title       = title or "",
-                    similarity  = round(float(similarity), 4),
-                    metadata    = metadata or {},
-                ))
-            return results
+                    document_id = row[1],
+                    content     = row[3],
+                    title       = row[2] or "",
+                    similarity  = round(float(row[5]), 4),
+                    metadata    = row[4] or {},
+                )
+                for row in rows
+            ]
 
         except Exception as e:
-            logger.warning(f"[Retriever] Erreur sur schéma {schema} : {e}")
+            logger.warning(f"[Retriever] Schéma {schema} ignoré : {e}")
             return []

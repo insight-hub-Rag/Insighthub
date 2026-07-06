@@ -3,7 +3,8 @@ from typing import Any, Optional
 from app.core.base_transformer import BaseTransformer
 from app.core.models import Chunk, RawRecord
 
-MAX_CHUNK_CHARS = 2000
+MAX_CHUNK_CHARS = 1500
+OVERLAP_CHARS   = 150
 
 
 class JiraTransformer(BaseTransformer):
@@ -75,28 +76,85 @@ class JiraTransformer(BaseTransformer):
                 document_id = external_id,
                 source_type = "jira",
                 content     = text[:MAX_CHUNK_CHARS],
-                metadata    = {**metadata, "chunk_type": "comment",
-                               "comment_author": comment["author"]},
+                metadata    = {
+                    **metadata,
+                    "chunk_type":     "comment",
+                    "comment_author": comment["author"],
+                },
             ))
 
         return chunks
 
     @staticmethod
-    def _split_text(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list[str]:
+    def _split_text(
+        text: str,
+        max_chars: int = MAX_CHUNK_CHARS,
+        overlap: int   = OVERLAP_CHARS,
+    ) -> list[str]:
+        """
+        Recursive Character Text Splitting avec overlap.
+        Ordre de priorité de coupure :
+        1. paragraphes (\n\n)
+        2. lignes (\n)
+        3. phrases (. )
+        4. mots (espace)
+        Jamais de coupure en milieu de mot.
+        """
         if len(text) <= max_chars:
             return [text]
-        parts = []
-        while text:
-            parts.append(text[:max_chars])
-            text = text[max_chars:]
-        return parts
+
+        separators = ["\n\n", "\n", ". ", " "]
+
+        def _recursive_split(t: str, seps: list[str]) -> list[str]:
+            if len(t) <= max_chars:
+                return [t]
+
+            sep   = seps[0] if seps else " "
+            parts = t.split(sep)
+
+            current = ""
+            result  = []
+
+            for part in parts:
+                candidate = current + sep + part if current else part
+
+                if len(candidate) <= max_chars:
+                    current = candidate
+                else:
+                    if current:
+                        result.append(current)
+                    if len(part) > max_chars and len(seps) > 1:
+                        result.extend(_recursive_split(part, seps[1:]))
+                        current = ""
+                    else:
+                        current = part
+
+            if current:
+                result.append(current)
+
+            return result
+
+        raw_chunks = _recursive_split(text, separators)
+
+        # Ajouter l overlap entre chunks
+        if overlap <= 0 or len(raw_chunks) <= 1:
+            return raw_chunks
+
+        overlapped = [raw_chunks[0]]
+        for i in range(1, len(raw_chunks)):
+            prev         = raw_chunks[i - 1]
+            current      = raw_chunks[i]
+            overlap_text = prev[-overlap:] if len(prev) > overlap else prev
+            overlapped.append(overlap_text + " " + current)
+
+        return overlapped
 
     @staticmethod
     def _extract_comments(comments: list) -> list[dict]:
         return [
             {
-                "author": (c.get("author") or {}).get("displayName", ""),
-                "body":   JiraTransformer._adf_to_text(c.get("body")),
+                "author":  (c.get("author") or {}).get("displayName", ""),
+                "body":    JiraTransformer._adf_to_text(c.get("body")),
                 "created": c.get("created"),
             }
             for c in comments
@@ -109,11 +167,13 @@ class JiraTransformer(BaseTransformer):
         if isinstance(adf, str):
             return adf
         texts: list[str] = []
+
         def traverse(node: Any) -> None:
             if isinstance(node, dict):
                 if node.get("type") == "text":
                     texts.append(node.get("text", ""))
                 for child in node.get("content", []):
                     traverse(child)
+
         traverse(adf)
         return " ".join(texts).strip()
