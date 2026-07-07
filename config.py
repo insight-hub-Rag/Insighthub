@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     jira_project_keys: str = ""
     jira_max_results: int  = 50
 
+    # ── Confluence ──────────────────────────────────────────────────────
+    confluence_url: str          = ""    # ex: https://votreorg.atlassian.net
+    confluence_user: str         = ""    # même email que le compte Atlassian
+    confluence_api_token: str    = ""    # jeton API Atlassian
+    confluence_space_keys: str   = ""    # espaces à synchroniser, en CSV (ex: "IHUB,DOC")
+    confluence_max_results: int  = 50
+
     # ── SharePoint ──────────────────────────────────────────────────────
     sharepoint_tenant_id:     str = ""
     sharepoint_client_id:     str = ""
@@ -40,7 +47,7 @@ class Settings(BaseSettings):
     # ── Embedding ───────────────────────────────────────────────────────
     embedding_provider:  str = "local"
     embedding_model:     str = "all-MiniLM-L6-v2"
-    embedding_dimension: int = 384
+    embedding_dimension: int = 1024
 
     # ── AWS Bedrock ─────────────────────────────────────────────────────
     aws_access_key_id:     str  = ""
@@ -59,6 +66,10 @@ class Settings(BaseSettings):
     @property
     def jira_projects(self) -> list[str]:
         return [p.strip() for p in self.jira_project_keys.split(",") if p.strip()]
+
+    @property
+    def confluence_spaces(self) -> list[str]:
+        return [s.strip() for s in self.confluence_space_keys.split(",") if s.strip()]
 
     @property
     def servicenow_configured(self) -> bool:

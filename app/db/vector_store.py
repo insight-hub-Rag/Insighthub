@@ -23,6 +23,7 @@ SCHEMA_BY_SOURCE = {
     "jira": "jira",
     "servicenow": "servicenow",
     "sharepoint": "sharepoint",
+    "confluence": "confluence",
 }
 
 

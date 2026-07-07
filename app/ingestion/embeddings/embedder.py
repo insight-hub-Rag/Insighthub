@@ -1,16 +1,6 @@
-"""
-Embedder : transforme du texte en vecteurs.
-
-Deux stratégies disponibles, choisies via `settings.embedding_provider` :
-  - "local"   : sentence-transformers, modèle exécuté localement (par défaut)
-  - "bedrock" : AWS Bedrock (Titan Embed), nécessite des credentials AWS
-
-L'Embedder est injecté dans le pipeline (Dependency Injection) plutôt que
-d'être un singleton de module — ça le rend testable (on peut injecter un
-faux embedder dans les tests) et explicite sur son cycle de vie.
-"""
-
 import json
+import logging
+import time
 from typing import Optional, Protocol
 
 from loguru import logger
@@ -20,19 +10,14 @@ from app.core.models import Chunk
 
 
 class EmbeddingBackend(Protocol):
-    """Contrat minimal que toute stratégie d'embedding doit respecter."""
-
     def encode(self, texts: list[str]) -> list[list[float]]:
         ...
 
 
 class LocalEmbeddingBackend:
-    """Stratégie d'embedding locale, via sentence-transformers."""
-
     def __init__(self, model_name: str):
         from sentence_transformers import SentenceTransformer
-
-        logger.info(f"[Embedder] Chargement du modèle local : {model_name}")
+        logger.info(f"[Embedder] Chargement modèle local : {model_name}")
         self._model = SentenceTransformer(model_name)
 
     def encode(self, texts: list[str]) -> list[list[float]]:
@@ -45,74 +30,63 @@ class LocalEmbeddingBackend:
 
 
 class BedrockEmbeddingBackend:
-    """Stratégie d'embedding via AWS Bedrock (Titan Embed)."""
-
-    def __init__(self, model_id: str, region: str, access_key: str, secret_key: str):
+    def __init__(self):
         import boto3
-
-        if not access_key or not secret_key:
-            raise RuntimeError(
-                "AWS credentials manquants : aws_access_key_id et "
-                "aws_secret_access_key doivent être configurés pour utiliser Bedrock."
-            )
-
-        self._model_id = model_id
         self._client = boto3.client(
             "bedrock-runtime",
-            region_name=region,
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
+            region_name           = settings.aws_region,
+            aws_access_key_id     = settings.aws_access_key_id,
+            aws_secret_access_key = settings.aws_secret_access_key,
         )
+        self._model_id = "amazon.titan-embed-text-v2:0"
+        logger.info(f"[Embedder] Bedrock Titan Embed v2 | region={settings.aws_region}")
 
     def encode(self, texts: list[str]) -> list[list[float]]:
-        # L'API Bedrock Titan Embed ne supporte qu'un texte à la fois.
         vectors = []
         for text in texts:
-            body = json.dumps({"inputText": text[:8000]})
-            resp = self._client.invoke_model(
-                modelId=self._model_id,
-                body=body,
-                contentType="application/json",
-                accept="application/json",
+            body = json.dumps({
+                "inputText":  text[:8000],
+                "dimensions": 1024,
+                "normalize":  True,
+            })
+            resp   = self._client.invoke_model(
+                modelId     = self._model_id,
+                body        = body,
+                contentType = "application/json",
+                accept      = "application/json",
             )
-            vectors.append(json.loads(resp["body"].read())["embedding"])
+            result = json.loads(resp["body"].read())
+            vectors.append(result["embedding"])
         return vectors
 
 
 def _build_backend() -> EmbeddingBackend:
-    """Factory : construit le bon backend selon la configuration."""
-    if settings.embedding_provider == "bedrock":
-        return BedrockEmbeddingBackend(
-            model_id=settings.bedrock_embedding_model,
-            region=settings.aws_region,
-            access_key=settings.aws_access_key_id,
-            secret_key=settings.aws_secret_access_key,
-        )
+    if settings.embedding_provider == "bedrock" and settings.aws_access_key_id:
+        return BedrockEmbeddingBackend()
+    logger.info("[Embedder] Fallback local")
     return LocalEmbeddingBackend(model_name=settings.embedding_model)
 
 
 class Embedder:
-    """
-    Point d'entrée unique utilisé par le pipeline pour vectoriser des chunks.
-    Encapsule le choix du backend (local ou Bedrock) derrière une interface
-    stable — le pipeline ne sait jamais laquelle des deux est utilisée.
-    """
-
     def __init__(self, backend: Optional[EmbeddingBackend] = None):
         self._backend = backend or _build_backend()
 
     def embed_chunks(self, chunks: list[Chunk]) -> list[Chunk]:
-        """
-        Calcule l'embedding de chaque chunk et le remplit sur place.
-        Retourne la même liste de chunks, avec `chunk.embedding` rempli.
-        """
         if not chunks:
             return chunks
 
-        texts = [c.content for c in chunks]
+        t0      = time.time()
+        texts   = [c.content for c in chunks]
         vectors = self._backend.encode(texts)
+        elapsed = time.time() - t0
 
         for chunk, vector in zip(chunks, vectors):
             chunk.embedding = vector
 
+        logger.info(
+            f"[Embedder] {len(chunks)} chunks | "
+            f"temps={elapsed:.3f}s | "
+            f"moy={elapsed/len(chunks)*1000:.1f}ms/chunk | "
+            f"dims={len(vectors[0]) if vectors else 0}"
+        )
         return chunks

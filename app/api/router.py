@@ -1,4 +1,5 @@
 import logging
+import time
 import traceback
 from typing import Optional
 
@@ -9,8 +10,8 @@ from app.connectors.jira.pipeline import JiraConnector
 from app.connectors.jira.transformer import JiraTransformer
 from app.connectors.sharepoint.pipeline import SharePointConnector
 from app.connectors.sharepoint.transformer import SharePointTransformer
-# from app.connectors.servicenow.pipeline import ServiceNowConnector
-# from app.connectors.servicenow.transformer import ServiceNowTransformer
+from app.connectors.confluence.pipeline import ConfluenceConnector
+from app.connectors.confluence.transformer import ConfluenceTransformer
 from app.db.vector_store import VectorStore
 from app.ingestion.embeddings.embedder import Embedder
 from app.ingestion.pipeline import IngestionPipeline
@@ -21,12 +22,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# ── Modèles Pydantic ──────────────────────────────────────────────────
-
 class SyncRequest(BaseModel):
     project_key:   Optional[str] = None
     list_title:    Optional[str] = None
-    table:         Optional[str] = None
+    space_key:     Optional[str] = None
     updated_after: Optional[str] = None
 
 
@@ -38,44 +37,39 @@ class SearchRequest(BaseModel):
     generate:       bool            = True
 
 
-# ── Factories pipelines ───────────────────────────────────────────────
-
 def _build_jira_pipeline(request: SyncRequest) -> IngestionPipeline:
     return IngestionPipeline(
-        connector=JiraConnector(project_key=request.project_key),
-        transformer=JiraTransformer(),
-        embedder=Embedder(),
-        store=VectorStore(),
+        connector   = JiraConnector(project_key=request.project_key),
+        transformer = JiraTransformer(),
+        embedder    = Embedder(),
+        store       = VectorStore(),
     )
 
 
 def _build_sharepoint_pipeline(request: SyncRequest) -> IngestionPipeline:
     return IngestionPipeline(
-        connector=SharePointConnector(list_title=request.list_title),
-        transformer=SharePointTransformer(),
-        embedder=Embedder(),
-        store=VectorStore(),
+        connector   = SharePointConnector(list_title=request.list_title),
+        transformer = SharePointTransformer(),
+        embedder    = Embedder(),
+        store       = VectorStore(),
     )
 
 
-def _build_servicenow_pipeline(request: SyncRequest) -> IngestionPipeline:
+def _build_confluence_pipeline(request: SyncRequest) -> IngestionPipeline:
     return IngestionPipeline(
-        connector=ServiceNowConnector(table=request.table),
-        transformer=ServiceNowTransformer(),
-        embedder=Embedder(),
-        store=VectorStore(),
+        connector   = ConfluenceConnector(space_key=request.space_key),
+        transformer = ConfluenceTransformer(),
+        embedder    = Embedder(),
+        store       = VectorStore(),
     )
 
 
-# Ajouter une source = ajouter une entrée ici (Open/Closed Principle)
 PIPELINE_FACTORIES = {
     "jira":        _build_jira_pipeline,
     "sharepoint":  _build_sharepoint_pipeline,
-    "servicenow":  _build_servicenow_pipeline,
+    "confluence":  _build_confluence_pipeline,
 }
 
-
-# ── Endpoints ─────────────────────────────────────────────────────────
 
 @router.get("/health")
 async def health() -> dict[str, str]:
@@ -84,16 +78,12 @@ async def health() -> dict[str, str]:
 
 @router.post("/ingestion/{source}/sync", summary="Synchroniser une source")
 async def sync_source(source: str, request: SyncRequest) -> dict:
-    """
-    Lance le pipeline d ingestion pour la source donnée.
-    Sources disponibles : jira | sharepoint | servicenow
-    """
     factory = PIPELINE_FACTORIES.get(source)
     if factory is None:
         raise HTTPException(
-            status_code=404,
-            detail=f"Source inconnue : '{source}'. "
-                   f"Disponibles : {list(PIPELINE_FACTORIES)}",
+            status_code = 404,
+            detail      = f"Source inconnue : '{source}'. "
+                          f"Disponibles : {list(PIPELINE_FACTORIES)}",
         )
 
     try:
@@ -119,27 +109,22 @@ async def sync_source(source: str, request: SyncRequest) -> dict:
 
 @router.post("/search", summary="Recherche sémantique RAG")
 async def search(request: SearchRequest) -> dict:
-    """
-    Pipeline RAG complet :
-    1. Embed la question avec le même modèle que l ingestion
-    2. Cherche les chunks similaires dans pgvector (toutes sources ou filtrée)
-    3. Génère une réponse avec Groq LLM (si generate=True)
-    """
+    t_start = time.time()
+
     try:
-        # 1. Retrieval
-        retriever = Retriever()
-        chunks    = retriever.search(
+        retriever   = Retriever()
+        chunks      = retriever.search(
             query          = request.question,
             source         = request.source,
             top_k          = request.top_k,
             min_similarity = request.min_similarity,
         )
+        t_retrieval = time.time() - t_start
 
-        # 2. Retrieval only (sans génération LLM)
         if not request.generate:
             return {
                 "question": request.question,
-                "chunks": [
+                "chunks":   [
                     {
                         "chunk_id":    c.chunk_id,
                         "source_type": c.source_type,
@@ -150,18 +135,29 @@ async def search(request: SearchRequest) -> dict:
                     }
                     for c in chunks
                 ],
+                "performance": {
+                    "retrieval_ms": round(t_retrieval * 1000, 1),
+                    "chunks_found": len(chunks),
+                },
             }
 
-        # 3. RAG complet avec génération
-        generator = Generator()
-        response  = generator.generate(request.question, chunks)
+        t_gen_start = time.time()
+        generator   = Generator()
+        response    = generator.generate(request.question, chunks)
+        t_gen       = time.time() - t_gen_start
+        t_total     = time.time() - t_start
 
         return {
-            "question":             response.question,
-            "answer":               response.answer,
-            "model":                response.model,
-            "sources":              response.sources,
+            "question":              response.question,
+            "answer":                response.answer,
+            "model":                 response.model,
+            "sources":               response.sources,
             "total_chunks_searched": response.total_chunks_searched,
+            "performance": {
+                "retrieval_ms":  round(t_retrieval * 1000, 1),
+                "generation_ms": round(t_gen * 1000, 1),
+                "total_ms":      round(t_total * 1000, 1),
+            },
         }
 
     except Exception as exc:
