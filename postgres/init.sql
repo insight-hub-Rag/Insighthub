@@ -33,7 +33,10 @@ CREATE INDEX IF NOT EXISTS idx_sync_history_source
     ON public.sync_history (source_type, started_at DESC);
 
 INSERT INTO public.ingestion_sources (source_type, display_name, enabled) VALUES
-    ('jira', 'Jira', TRUE)
+    ('jira', 'Jira', TRUE),
+    ('servicenow', 'ServiceNow', FALSE),
+    ('sharepoint', 'SharePoint', FALSE),
+    ('confluence', 'Confluence', TRUE)
 ON CONFLICT (source_type) DO NOTHING;
 
 -- ------------------------------------------------------------
@@ -69,3 +72,38 @@ CREATE INDEX IF NOT EXISTS idx_jira_embeddings_document_id
 
 CREATE INDEX IF NOT EXISTS idx_jira_embeddings_vector
     ON jira.embeddings USING hnsw (embedding vector_cosine_ops);
+
+
+
+-- ------------------------------------------------------------
+-- SCHÉMA CONFLUENCE
+-- ------------------------------------------------------------
+CREATE SCHEMA IF NOT EXISTS confluence;
+
+CREATE TABLE IF NOT EXISTS confluence.documents (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    external_id TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (external_id)
+);
+
+CREATE TABLE IF NOT EXISTS confluence.embeddings (
+    chunk_id    TEXT PRIMARY KEY,
+    document_id UUID NOT NULL REFERENCES confluence.documents(id) ON DELETE CASCADE,
+    content     TEXT NOT NULL,
+    embedding   vector(1024) NOT NULL,
+    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_confluence_documents_external_id
+    ON confluence.documents (external_id);
+
+CREATE INDEX IF NOT EXISTS idx_confluence_embeddings_document_id
+    ON confluence.embeddings (document_id);
+
+CREATE INDEX IF NOT EXISTS idx_confluence_embeddings_vector
+    ON confluence.embeddings USING hnsw (embedding vector_cosine_ops);

@@ -8,6 +8,10 @@ from pydantic import BaseModel
 
 from app.connectors.jira.pipeline import JiraConnector
 from app.connectors.jira.transformer import JiraTransformer
+from app.connectors.sharepoint.pipeline import SharePointConnector
+from app.connectors.sharepoint.transformer import SharePointTransformer
+from app.connectors.confluence.pipeline import ConfluenceConnector
+from app.connectors.confluence.transformer import ConfluenceTransformer
 from app.db.vector_store import VectorStore
 from app.ingestion.embeddings.embedder import Embedder
 from app.ingestion.pipeline import IngestionPipeline
@@ -20,6 +24,8 @@ router = APIRouter()
 
 class SyncRequest(BaseModel):
     project_key:   Optional[str] = None
+    list_title:    Optional[str] = None
+    space_key:     Optional[str] = None
     updated_after: Optional[str] = None
 
 
@@ -40,8 +46,28 @@ def _build_jira_pipeline(request: SyncRequest) -> IngestionPipeline:
     )
 
 
+def _build_sharepoint_pipeline(request: SyncRequest) -> IngestionPipeline:
+    return IngestionPipeline(
+        connector   = SharePointConnector(list_title=request.list_title),
+        transformer = SharePointTransformer(),
+        embedder    = Embedder(),
+        store       = VectorStore(),
+    )
+
+
+def _build_confluence_pipeline(request: SyncRequest) -> IngestionPipeline:
+    return IngestionPipeline(
+        connector   = ConfluenceConnector(space_key=request.space_key),
+        transformer = ConfluenceTransformer(),
+        embedder    = Embedder(),
+        store       = VectorStore(),
+    )
+
+
 PIPELINE_FACTORIES = {
-    "jira": _build_jira_pipeline,
+    "jira":        _build_jira_pipeline,
+    "sharepoint":  _build_sharepoint_pipeline,
+    "confluence":  _build_confluence_pipeline,
 }
 
 

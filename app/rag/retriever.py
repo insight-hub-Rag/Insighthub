@@ -11,9 +11,10 @@ from app.core.models import Chunk, SearchResult
 logger = logging.getLogger(__name__)
 
 SOURCES = {
-    "jira":       "jira",
-    "servicenow": "servicenow",
-    "sharepoint": "sharepoint",
+    "jira":        "jira",
+    "servicenow":  "servicenow",
+    "sharepoint":  "sharepoint",
+    "confluence":  "confluence",
 }
 
 _embedder = None
