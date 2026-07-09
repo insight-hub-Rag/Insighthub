@@ -53,7 +53,7 @@ python-jose[cryptography]==3.3.0   # JWT
 passlib[bcrypt]==1.7.4             # hashage mot de passe
 
 # ── Logs ─────────────────────────────────────
-loguru==0.7.2                 # logging moderne et coloré
+loguru==0.7.3                 # logging moderne et coloré
 
 # ── Tests ────────────────────────────────────
 pytest==8.2.0
