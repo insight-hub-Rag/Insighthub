@@ -15,11 +15,16 @@ from app.connectors.confluence.transformer import ConfluenceTransformer
 from app.db.vector_store import VectorStore
 from app.ingestion.embeddings.embedder import Embedder
 from app.ingestion.pipeline import IngestionPipeline
-from app.rag.retriever import Retriever
-from app.rag.generator import Generator
+from app.rag.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Instance unique réutilisée entre les requêtes — évite de recréer les
+# composants (routers, reranker, generator) à chaque appel. Les modèles
+# lourds (embedder, cross-encoder) restent chargés une seule fois en
+# mémoire grâce au lazy loading déjà en place dans chaque module.
+_orchestrator = Orchestrator()
 
 
 class SyncRequest(BaseModel):
@@ -30,11 +35,8 @@ class SyncRequest(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    question:       str
-    source:         Optional[str]   = None
-    top_k:          Optional[int]   = None
-    min_similarity: Optional[float] = None
-    generate:       bool            = True
+    question: str
+    user_id:  Optional[str] = None
 
 
 def _build_jira_pipeline(request: SyncRequest) -> IngestionPipeline:
@@ -107,45 +109,16 @@ async def sync_source(source: str, request: SyncRequest) -> dict:
     }
 
 
-@router.post("/search", summary="Recherche sémantique RAG")
+@router.post("/search", summary="Recherche RAG (pipeline orchestrateur complet)")
 async def search(request: SearchRequest) -> dict:
     t_start = time.time()
 
     try:
-        retriever   = Retriever()
-        chunks      = retriever.search(
-            query          = request.question,
-            source         = request.source,
-            top_k          = request.top_k,
-            min_similarity = request.min_similarity,
+        response = await _orchestrator.ask(
+            question = request.question,
+            user_id  = request.user_id,
         )
-        t_retrieval = time.time() - t_start
-
-        if not request.generate:
-            return {
-                "question": request.question,
-                "chunks":   [
-                    {
-                        "chunk_id":    c.chunk_id,
-                        "source_type": c.source_type,
-                        "document_id": c.document_id,
-                        "title":       c.title,
-                        "similarity":  c.similarity,
-                        "content":     c.content[:300],
-                    }
-                    for c in chunks
-                ],
-                "performance": {
-                    "retrieval_ms": round(t_retrieval * 1000, 1),
-                    "chunks_found": len(chunks),
-                },
-            }
-
-        t_gen_start = time.time()
-        generator   = Generator()
-        response    = generator.generate(request.question, chunks)
-        t_gen       = time.time() - t_gen_start
-        t_total     = time.time() - t_start
+        t_total = time.time() - t_start
 
         return {
             "question":              response.question,
@@ -154,9 +127,7 @@ async def search(request: SearchRequest) -> dict:
             "sources":               response.sources,
             "total_chunks_searched": response.total_chunks_searched,
             "performance": {
-                "retrieval_ms":  round(t_retrieval * 1000, 1),
-                "generation_ms": round(t_gen * 1000, 1),
-                "total_ms":      round(t_total * 1000, 1),
+                "total_ms": round(t_total * 1000, 1),
             },
         }
 

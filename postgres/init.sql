@@ -107,3 +107,26 @@ CREATE INDEX IF NOT EXISTS idx_confluence_embeddings_document_id
 
 CREATE INDEX IF NOT EXISTS idx_confluence_embeddings_vector
     ON confluence.embeddings USING hnsw (embedding vector_cosine_ops);
+
+-- ------------------------------------------------------------
+-- FULL-TEXT SEARCH (BM25 approximatif) — JIRA
+-- ------------------------------------------------------------
+-- Colonne générée automatiquement à partir du contenu, jamais modifiée
+-- à la main. Config 'french' pour gérer les accents/pluriels/stopwords
+-- français correctement dans le classement par pertinence.
+ALTER TABLE jira.embeddings
+    ADD COLUMN IF NOT EXISTS content_tsv tsvector
+    GENERATED ALWAYS AS (to_tsvector('french', content)) STORED;
+
+CREATE INDEX IF NOT EXISTS idx_jira_embeddings_tsv
+    ON jira.embeddings USING gin (content_tsv);
+
+-- ------------------------------------------------------------
+-- FULL-TEXT SEARCH (BM25 approximatif) — CONFLUENCE
+-- ------------------------------------------------------------
+ALTER TABLE confluence.embeddings
+    ADD COLUMN IF NOT EXISTS content_tsv tsvector
+    GENERATED ALWAYS AS (to_tsvector('french', content)) STORED;
+
+CREATE INDEX IF NOT EXISTS idx_confluence_embeddings_tsv
+    ON confluence.embeddings USING gin (content_tsv);
