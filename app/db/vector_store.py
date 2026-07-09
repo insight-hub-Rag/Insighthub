@@ -8,7 +8,6 @@ global) : testable avec une session mockée, cycle de vie explicite.
 """
 
 import json
-from typing import Optional
 
 from loguru import logger
 from sqlalchemy import text

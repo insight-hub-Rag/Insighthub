@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, Iterable, List, Optional
+from typing import Any, List, Optional
 
 from loguru import logger
 

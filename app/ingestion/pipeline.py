@@ -20,7 +20,7 @@ from loguru import logger
 
 from app.core.base_connector import BaseConnector
 from app.core.base_transformer import BaseTransformer
-from app.core.models import Chunk, SyncResult
+from app.core.models import SyncResult
 from app.db.vector_store import VectorStore
 from app.ingestion.embeddings.embedder import Embedder
 

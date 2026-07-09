@@ -15,7 +15,7 @@ l'Agent Manager fait tourner plusieurs agents en parallèle.
 import asyncio
 import logging
 import time
-from abc import ABC, abstractmethod
+from abc import ABC
 
 from app.core.models import PreprocessedQuery, RoutingDecision, AgentResult
 from app.rag.retrievers.vector_retriever import VectorRetriever, embed_query
