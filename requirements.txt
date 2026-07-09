@@ -25,7 +25,7 @@ pgvector==0.2.5               # extension vectorielle pour PostgreSQL
 # ── PDF ──────────────────────────────────────
 pypdf==4.2.0                  # lecture / écriture / merge PDF
 pdfplumber==0.11.0            # extraction texte & tableaux
-reportlab==4.2.0              # création de PDF
+reportlab==5.0.0              # création de PDF
 
 # ── Word / DOCX ──────────────────────────────
 python-docx==1.1.2            # lecture et création de fichiers .docx
