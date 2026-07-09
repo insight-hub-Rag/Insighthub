@@ -11,7 +11,7 @@ python-multipart==0.0.9       # upload de fichiers
 
 # ── HTTP Client (requests / responses) ───────
 httpx==0.27.0                 # async HTTP client (aussi utilisé par TestClient)
-requests==2.31.0              # HTTP client synchrone
+requests==2.34.2              # HTTP client synchrone
 
 # ── ORM & Base de données ────────────────────
 sqlalchemy==2.0.30            # ORM principal
