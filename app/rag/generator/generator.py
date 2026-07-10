@@ -1,7 +1,9 @@
 """
 Generator — dernière étape du pipeline. Reçoit les chunks déjà
-rerankés, les fait passer par le Context Builder (budget de tokens),
-construit le prompt, et appelle le LLM (Groq en dev, Bedrock en prod).
+rerankés (ou passés tels quels si le reranking a été sauté pour un
+match exact par ID), les fait passer par le Context Builder (budget de
+tokens), construit le prompt, et appelle le LLM (Groq en dev, Bedrock
+en prod).
 """
 
 import logging
@@ -67,11 +69,11 @@ class Generator:
 
     @staticmethod
     def _best_score(chunk: RetrievedChunk) -> float:
-        """Affiche le score le plus significatif disponible : le
-        rerank_score (le plus fiable) en priorité, sinon on retombe
-        sur les scores intermédiaires."""
-        for score in (chunk.rerank_score, chunk.rrf_score,
-                      chunk.vector_score, chunk.sql_score, chunk.bm25_score):
+        """Affiche le score le plus significatif disponible. sql_score
+        passe avant rrf_score : un match exact (1.0) est plus parlant
+        pour l'utilisateur qu'un score de fusion RRF générique."""
+        for score in (chunk.rerank_score, chunk.sql_score,
+                      chunk.vector_score, chunk.bm25_score, chunk.rrf_score):
             if score is not None:
                 return round(score, 4)
         return 0.0

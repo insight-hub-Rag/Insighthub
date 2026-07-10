@@ -4,7 +4,8 @@ séquentielle (pas encore LangGraph, volontairement — LangGraph sera
 ajouté à la toute fin, une fois chaque composant validé isolément).
 
 Flux : Preprocessor → Rule Router → (LLM Router si besoin) →
-       Agent Manager → Global Fusion → Reranker → Generator
+       Agent Manager → Global Fusion → Reranker (sauf match ID exact) →
+       Generator
 """
 
 import logging
@@ -68,12 +69,30 @@ class Orchestrator:
         # 4. Fusion globale — dédup + RRF inter-sources
         fused_chunks = global_fusion(agent_results, top_k=15)
 
-        # 5. Reranking — cross-encoder sur les meilleurs candidats
-        reranked_chunks = self.reranker.rerank(
-            query=preprocessed.cleaned_text,
-            chunks=fused_chunks,
-            top_n=8,
-        )
+        if not fused_chunks:
+            logger.warning("[Orchestrator] Fusion globale vide après filtrage")
+            return RAGResponse(
+                question=question,
+                answer="Je n'ai pas trouvé d'informations pertinentes.",
+                sources=[],
+                model="none",
+                total_chunks_searched=0,
+            )
+
+        # 5. Reranking — sauté si TOUS les chunks viennent d'un match exact
+        # par identifiant (sql_score=1.0, garanti par search_by_id) :
+        # le cross-encoder n'apporte rien pour départager un candidat déjà
+        # certain, et peut même donner un score trompeur pour une réponse
+        # pourtant correcte à 100%.
+        if all(c.sql_score == 1.0 for c in fused_chunks):
+            reranked_chunks = fused_chunks[:8]
+            logger.info("[Orchestrator] Reranking sauté (match exact par ID)")
+        else:
+            reranked_chunks = self.reranker.rerank(
+                query=preprocessed.cleaned_text,
+                chunks=fused_chunks,
+                top_n=8,
+            )
 
         # 6. Génération finale (le Context Builder est appelé à l'intérieur)
         response = self.generator.generate(question, reranked_chunks)

@@ -5,6 +5,11 @@ Orchestre les 3 retrievers (vector, SQL, BM25) pour LE schéma propre à
 l'agent, les exécute en parallèle, applique la fusion RRF interne, et
 retourne un AgentResult unique avec mesure de latence.
 
+Cas particulier : si le router a détecté un identifiant exact (ex:
+"IH-1"), on court-circuite toute la recherche floue et on va chercher
+CE document précisément via search_by_id() — inutile de lancer
+vector/BM25/metadata quand on sait déjà exactement quel document on veut.
+
 Les retrievers étant synchrones (psycopg2 bloquant), chaque appel est
 délégué à un thread via asyncio.to_thread — ça permet quand même la
 parallélisation réelle (vector + bm25 + sql en même temps pour CET
@@ -50,6 +55,26 @@ class BaseAgent(ABC):
         t0 = time.time()
 
         try:
+            # Court-circuit : identifiant exact détecté par le Rule Router
+            # (ex: "IH-1") → recherche directe, pas de recherche floue.
+            external_id = routing.filters.get("external_id")
+            if external_id:
+                chunks = await asyncio.to_thread(
+                    self.sql_retriever.search_by_id,
+                    schema=self.source_type,
+                    external_id=external_id,
+                )
+                latency_ms = round((time.time() - t0) * 1000, 1)
+                logger.info(
+                    f"[{self.source_type}Agent] Recherche directe par ID "
+                    f"'{external_id}' | {len(chunks)} chunks | {latency_ms}ms"
+                )
+                return AgentResult(
+                    source_type=self.source_type,
+                    chunks=chunks,
+                    latency_ms=latency_ms,
+                )
+
             # Embedding calculé une seule fois, réutilisé par le vector retriever
             query_embedding = await asyncio.to_thread(
                 embed_query, query.cleaned_text
@@ -72,6 +97,7 @@ class BaseAgent(ABC):
             ]
 
             # SQL metadata search seulement si le router a extrait des filtres
+            # (autres que external_id, déjà géré au-dessus)
             if routing.filters:
                 tasks.append(
                     asyncio.to_thread(
