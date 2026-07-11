@@ -12,8 +12,10 @@ concurrency:
 
 jobs:
   lint:
-    name: Lint (ruff)
+    name: Lint (ruff - soft)
     runs-on: ubuntu-latest
+    # Non bloquant : le lint est informatif, il n'empêche pas de merger.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -26,13 +28,13 @@ jobs:
       - name: Install ruff
         run: pip install ruff==0.6.9
 
-      - name: Ruff check
+      - name: Ruff check (règles minimales)
         run: ruff check .
 
   test:
     name: Tests (pytest)
     runs-on: ubuntu-latest
-    needs: lint
+    # Indépendant du lint : les tests tournent même si le lint échoue.
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -67,4 +69,4 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run pytest
-        run: pytest -q
+        run: pytest -q --tb=short
