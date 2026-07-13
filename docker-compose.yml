@@ -1,4 +1,5 @@
-﻿services:
+services:
+  # ─── Base de données PostgreSQL + pgvector ─────────────────────────────────
   postgres:
     image: pgvector/pgvector:pg16
     container_name: insighthub-postgres
@@ -17,22 +18,54 @@
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - insighthub-net
 
+  # ─── Backend FastAPI ────────────────────────────────────────────────────────
   backend:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: insighthub-backend
     restart: unless-stopped
     env_file: .env
     environment:
+      # Surcharge DATABASE_URL pour pointer vers le service postgres (pas localhost)
       DATABASE_URL: postgresql+asyncpg://insighthub:${POSTGRES_PASSWORD}@postgres:5432/insighthub
+      DATABASE_URL_SYNC: postgresql://insighthub:${POSTGRES_PASSWORD}@postgres:5432/insighthub
     volumes:
+      # Hot-reload en dev : monte le code source (retirer en prod)
       - .:/app
+      # Cache des modèles sentence-transformers persisté entre les rebuilds
+      - model_cache:/root/.cache/huggingface
     ports:
       - "8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      - insighthub-net
 
+  # ─── Frontend Next.js ───────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./insighthub-front
+      dockerfile: Dockerfile
+      args:
+        # L'URL de l'API telle que le navigateur la voit (hors réseau Docker)
+        NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+    container_name: insighthub-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+    depends_on:
+      - backend
+    networks:
+      - insighthub-net
+
+  # ─── Adminer (UI base de données) ──────────────────────────────────────────
   adminer:
     image: adminer:4
     container_name: insighthub-adminer
@@ -42,6 +75,13 @@
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      - insighthub-net
+
+networks:
+  insighthub-net:
+    driver: bridge
 
 volumes:
   postgres_data:
+  model_cache:
