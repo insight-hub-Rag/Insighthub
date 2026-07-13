@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ruff - soft)
+    runs-on: ubuntu-latest
+    # Non bloquant : le lint est informatif, il n'empêche pas de merger.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install ruff
+        run: pip install ruff==0.6.9
+
+      - name: Ruff check (warnings only, never blocks)
+        # --exit-zero : Ruff affiche les warnings dans les logs mais retourne toujours exit 0.
+        # Résultat : le job est TOUJOURS vert, les imports non utilisés (F401) sont juste informatifs.
+        run: ruff check . --exit-zero --output-format=github
+
+  test:
+    name: Tests (pytest)
+    runs-on: ubuntu-latest
+    # Indépendant du lint : les tests tournent même si le lint échoue.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: insighthub
+          POSTGRES_USER: insighthub
+          POSTGRES_PASSWORD: insighthub
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U insighthub -d insighthub"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://insighthub:insighthub@localhost:5432/insighthub
+      POSTGRES_PASSWORD: insighthub
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run pytest
+        run: pytest -q --tb=short

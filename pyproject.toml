@@ -1,0 +1,34 @@
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+exclude = [
+    "alembic/versions",
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+    "__pycache__",
+]
+
+[tool.ruff.lint]
+# Règles minimales : uniquement erreurs de syntaxe, bugs Pyflakes et bugs Python courants.
+# Pas de style pointilleux (pas de E/W/I/UP) pour ne pas bloquer les devs.
+select = [
+    "E9",  # erreurs de syntaxe
+    "F",   # Pyflakes (imports/variables non utilisés, noms non définis, ...)
+    "B",   # flake8-bugbear (bugs Python fréquents)
+]
+ignore = [
+    "E501",  # ligne trop longue
+    "B008",  # function call in default argument (fréquent avec FastAPI Depends())
+    "B904",  # raise ... from err (trop verbeux)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F401", "F811", "F841"]  # imports/fixtures non utilisés OK dans les tests
+"alembic/*" = ["F401", "F403"]        # imports Alembic auto-générés
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q --tb=short"
