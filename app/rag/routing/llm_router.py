@@ -16,9 +16,8 @@ from app.core.models import PreprocessedQuery, RoutingDecision
 
 logger = logging.getLogger(__name__)
 
-# Sources réellement disponibles dans ce projet (pas de servicenow :
-# aucun connecteur ni donnée ingérée pour l'instant).
-AVAILABLE_SOURCES = ["jira", "confluence", "sharepoint"]
+# Sources réellement disponibles dans ce projet.
+AVAILABLE_SOURCES = ["jira", "confluence", "sharepoint", "sql"]
 
 SYSTEM_PROMPT = f"""Tu es un routeur pour un assistant RAG d'entreprise.
 Analyse la question et retourne UNIQUEMENT un JSON valide (rien d'autre,
@@ -34,8 +33,13 @@ pas de texte avant/après, pas de markdown) avec ce format exact :
 
 Règles :
 - "sources" : choisis uniquement les sources pertinentes, jamais vide
+- "sql" : choisis cette source pour toute question portant sur des
+  données structurées/chiffrées de l'entreprise (comptages, moyennes,
+  agrégations, RH, projets, tickets en base de données) — PAS pour des
+  questions de documentation ou de contenu textuel narratif
 - "search_type" : "semantic" si question ouverte, "metadata" si filtre
-  exact demandé, "hybrid" si les deux
+  exact demandé, "hybrid" si les deux (pour "sql", cette valeur est
+  ignorée par l'agent mais garde "hybrid" par défaut)
 - "filters" : uniquement si un critère précis est demandé (statut,
   priorité...), sinon objet vide {{}}
 - "confidence" : ta certitude sur cette décision de routage
@@ -82,16 +86,20 @@ class LLMRouter:
     @staticmethod
     def _validate_sources(sources: list) -> list[str]:
         """Ne garde que les sources réellement disponibles — au cas où
-        le LLM halluciné une source inexistante (ex: 'servicenow')."""
+        le LLM halluciné une source inexistante."""
         valid = [s for s in sources if s in AVAILABLE_SOURCES]
         return valid if valid else AVAILABLE_SOURCES
 
     @staticmethod
     def _fallback_decision() -> RoutingDecision:
         """En cas d'échec total (API down, JSON invalide...), on cherche
-        partout plutôt que de bloquer le pipeline — dégradation gracieuse."""
+        dans les sources documentaires plutôt que de bloquer le
+        pipeline — dégradation gracieuse. "sql" est volontairement
+        exclu du fallback : générer une requête SQL sans certitude sur
+        l'intention réelle est risqué, mieux vaut chercher dans la
+        documentation par défaut."""
         return RoutingDecision(
-            sources=AVAILABLE_SOURCES,
+            sources=["jira", "confluence", "sharepoint"],
             search_type="hybrid",
             filters={},
             confidence=0.3,

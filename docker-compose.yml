@@ -10,7 +10,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/1_init.sql:ro
+      - ./postgres/init_nl2sql.sql:/docker-entrypoint-initdb.d/2_init_nl2sql.sql:ro
+      - ./postgres/init_nl2sql_test_data.sql:/docker-entrypoint-initdb.d/3_init_nl2sql_test_data.sql:ro
     ports:
       - "5432:5432"
     healthcheck:

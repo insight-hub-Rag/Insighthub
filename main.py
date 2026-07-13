@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 # pyrefly: ignore [missing-import]
@@ -6,6 +7,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import router
 from app.db.init_db import initialize_database_schema
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
 
 
 @asynccontextmanager

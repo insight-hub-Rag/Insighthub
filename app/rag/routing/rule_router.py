@@ -4,6 +4,8 @@ Rule Router — premier filtre, sans aucun appel LLM.
 Reconnaît par regex les identifiants explicites (ex: "IH-2") et route
 directement en recherche par ID. Reconnaît par mots-clés les intentions
 de filtre évidentes (statut, priorité) sans passer par le LLM Router.
+Reconnaît aussi par mots-clés les questions de données structurées
+(comptages, agrégations, RH) pour router vers la source "sql".
 
 Retourne None si la question est ambiguë — signal pour que le pipeline
 passe la main au LLM Router.
@@ -32,6 +34,10 @@ SOURCE_KEYWORDS = {
     "jira": "jira", "ticket": "jira", "tickets": "jira",
     "confluence": "confluence", "page": "confluence", "pages": "confluence",
     "documentation": "confluence",
+    # Données structurées / RH / business — routées vers l'agent NL2SQL
+    "combien": "sql", "nombre de": "sql", "moyenne": "sql",
+    "total": "sql", "somme": "sql", "statistique": "sql",
+    "employés": "sql", "salaire": "sql", "congé": "sql", "congés": "sql",
 }
 
 
@@ -78,9 +84,14 @@ class RuleRouter:
             logger.info("[RuleRouter] Aucun signal clair → délégation LLM Router")
             return None
 
+        # Cas SQL : recherche "metadata" n'a pas de sens ici (pas de
+        # vector/BM25/RRF côté NL2SQL) — on force "hybrid" par défaut,
+        # ignoré de toute façon par NL2SQLAgent qui a son propre pipeline.
+        search_type = "hybrid" if not filters or "sql" in sources else "metadata"
+
         decision = RoutingDecision(
             sources=list(sources) if sources else ["jira", "confluence"],
-            search_type="hybrid" if not filters else "metadata",
+            search_type=search_type,
             filters=filters,
             confidence=0.9,
             router_used="rule",

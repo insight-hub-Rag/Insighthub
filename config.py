@@ -22,10 +22,10 @@ class Settings(BaseSettings):
     jira_max_results: int  = 50
 
     # ── Confluence ──────────────────────────────────────────────────────
-    confluence_url: str          = ""    # ex: https://votreorg.atlassian.net
-    confluence_user: str         = ""    # même email que le compte Atlassian
-    confluence_api_token: str    = ""    # jeton API Atlassian
-    confluence_space_keys: str   = ""    # espaces à synchroniser, en CSV (ex: "IHUB,DOC")
+    confluence_url: str          = ""
+    confluence_user: str         = ""
+    confluence_api_token: str    = ""
+    confluence_space_keys: str   = ""
     confluence_max_results: int  = 50
 
     # ── SharePoint ──────────────────────────────────────────────────────
@@ -58,9 +58,15 @@ class Settings(BaseSettings):
 
     # ── RAG / LLM ───────────────────────────────────────────────────────
     groq_api_key:       str   = ""
-    groq_model:         str   = "llama3-8b-8192"
+    groq_model:         str   = "llama-3.3-70b-versatile"
     rag_top_k:          int   = 5
     rag_min_similarity: float = 0.3
+
+    # ── NL2SQL ──────────────────────────────────────────────────────────
+    nl2sql_target_db_url: str          = ""
+    nl2sql_latency_threshold_ms: float = 2000.0
+    nl2sql_schema_ttl_seconds: int     = 86400
+    bedrock_text_model: str            = "amazon.nova-pro-v1:0"
 
     # ── Properties ──────────────────────────────────────────────────────
     @property
