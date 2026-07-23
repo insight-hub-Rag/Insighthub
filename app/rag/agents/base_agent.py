@@ -22,13 +22,47 @@ import logging
 import time
 from abc import ABC
 
-from app.core.models import PreprocessedQuery, RoutingDecision, AgentResult
+from app.core.models import PreprocessedQuery, RoutingDecision, AgentResult, RetrievedChunk
 from app.rag.retrievers.vector_retriever import VectorRetriever, embed_query
-from app.rag.retrievers.sql_retriever import SQLRetriever
+from app.rag.retrievers.sql_retriever import SQLRetriever, ALLOWED_FILTER_KEYS
 from app.rag.retrievers.bm25_retriever import BM25Retriever
 from app.rag.fusion.rrf import reciprocal_rank_fusion
 
 logger = logging.getLogger(__name__)
+
+
+def _matches_filters(chunk: RetrievedChunk, filters: dict) -> bool:
+    """
+    Vérifie qu'un chunk déjà fusionné (vector + bm25 + sql confondus)
+    correspond VRAIMENT à un filtre exact (status="In Progress"...),
+    plutôt que de se contenter du boost RRF qui le laissait remonter
+    sans jamais exclure les chunks non conformes.
+
+    Chaque valeur de `filters` peut être une chaîne unique OU une liste
+    de valeurs candidates (ex: ["Highest", "High"]) — le chunk matche
+    si AU MOINS UNE valeur correspond.
+
+    Clé suffixée "_not" (ex: "status_not": "Terminé") = négation VRAIE,
+    pas une énumération à deviner. Demander au LLM de lister "toutes les
+    valeurs sauf Terminé" est fragile : il peut en oublier une (vécu en
+    pratique — "En cours" manquant sur "non résolus"). "status_not"
+    exclut la valeur précisément, quel que soit le nombre de valeurs
+    possibles dans l'énumération, sans avoir besoin de toutes les
+    connaître à l'avance.
+    """
+    for key, expected in filters.items():
+        is_negation = key.endswith("_not")
+        base_key = key[: -len("_not")] if is_negation else key
+        chunk_value = str((chunk.metadata or {}).get(base_key, "")).lower()
+        candidates = expected if isinstance(expected, list) else [expected]
+        any_match = any(str(v).lower() in chunk_value for v in candidates)
+        if is_negation:
+            if any_match:
+                return False
+        else:
+            if not any_match:
+                return False
+    return True
 
 
 class BaseAgent(ABC):
@@ -121,6 +155,26 @@ class BaseAgent(ABC):
                     ranked_lists.append(result)
 
             fused = reciprocal_rank_fusion(ranked_lists) if ranked_lists else []
+
+            # Filtrage STRICT post-fusion : le filtre extrait par le
+            # routeur (status, priority...) ne doit plus seulement
+            # "booster" un chunk via RRF — sinon "les tickets en cours"
+            # renvoie quand même tous les tickets, juste réordonnés. On
+            # exclut ici tout chunk qui ne correspond pas vraiment,
+            # quelle que soit la méthode qui l'a trouvé (vector/bm25/sql).
+            allowed_keys = ALLOWED_FILTER_KEYS.get(self.source_type, set())
+            hard_filters = {
+                k: v for k, v in routing.filters.items()
+                if v and (k.removesuffix("_not") in allowed_keys)
+            }
+            if hard_filters:
+                before = len(fused)
+                fused = [c for c in fused if _matches_filters(c, hard_filters)]
+                logger.info(
+                    f"[{self.source_type}Agent] Filtre strict {hard_filters} : "
+                    f"{before} -> {len(fused)} chunks"
+                )
+
             top_chunks = fused[: self.top_k_final]
 
             latency_ms = round((time.time() - t0) * 1000, 1)

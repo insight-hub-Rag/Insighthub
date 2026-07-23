@@ -130,3 +130,42 @@ ALTER TABLE confluence.embeddings
 
 CREATE INDEX IF NOT EXISTS idx_confluence_embeddings_tsv
     ON confluence.embeddings USING gin (content_tsv);
+-- ------------------------------------------------------------
+-- SCHÉMA SERVICENOW
+-- ------------------------------------------------------------
+CREATE SCHEMA IF NOT EXISTS servicenow;
+
+CREATE TABLE IF NOT EXISTS servicenow.documents (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    external_id TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (external_id)
+);
+
+CREATE TABLE IF NOT EXISTS servicenow.embeddings (
+    chunk_id    TEXT PRIMARY KEY,
+    document_id UUID NOT NULL REFERENCES servicenow.documents(id) ON DELETE CASCADE,
+    content     TEXT NOT NULL,
+    embedding   vector(1024) NOT NULL,
+    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_servicenow_documents_external_id
+    ON servicenow.documents (external_id);
+
+CREATE INDEX IF NOT EXISTS idx_servicenow_embeddings_document_id
+    ON servicenow.embeddings (document_id);
+
+CREATE INDEX IF NOT EXISTS idx_servicenow_embeddings_vector
+    ON servicenow.embeddings USING hnsw (embedding vector_cosine_ops);
+
+ALTER TABLE servicenow.embeddings
+    ADD COLUMN IF NOT EXISTS content_tsv tsvector
+    GENERATED ALWAYS AS (to_tsvector('french', content)) STORED;
+
+CREATE INDEX IF NOT EXISTS idx_servicenow_embeddings_tsv
+    ON servicenow.embeddings USING gin (content_tsv);

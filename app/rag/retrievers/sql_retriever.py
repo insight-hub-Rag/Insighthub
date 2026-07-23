@@ -68,8 +68,16 @@ class SQLRetriever(BaseRetriever):
             where_clauses = []
             params: list = []
             for key, value in safe_filters.items():
-                where_clauses.append("e.metadata->>%s ILIKE %s")
-                params.extend([key, f"%{value}%"])
+                # `value` peut être une chaîne unique OU une liste de
+                # valeurs candidates (ex: ["Highest", "High"] quand le
+                # LLM Router n'est pas sûr de laquelle existe vraiment
+                # pour "urgent") -> on construit un OR entre elles.
+                candidates = value if isinstance(value, list) else [value]
+                or_parts = []
+                for v in candidates:
+                    or_parts.append("e.metadata->>%s ILIKE %s")
+                    params.extend([key, f"%{v}%"])
+                where_clauses.append("(" + " OR ".join(or_parts) + ")")
 
             where_sql = " AND ".join(where_clauses)
             params.append(top_k)

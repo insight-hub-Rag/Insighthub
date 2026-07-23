@@ -38,6 +38,7 @@ class SyncRequest(BaseModel):
     project_key:   Optional[str] = None
     list_title:    Optional[str] = None
     space_key:     Optional[str] = None
+    table_name:    Optional[str] = None
     updated_after: Optional[str] = None
 
 
@@ -73,10 +74,20 @@ def _build_confluence_pipeline(request: SyncRequest) -> IngestionPipeline:
     )
 
 
+def _build_servicenow_pipeline(request: SyncRequest) -> IngestionPipeline:
+    return IngestionPipeline(
+        connector   = ServiceNowConnector(table=request.table_name),
+        transformer = ServiceNowTransformer(),
+        embedder    = Embedder(),
+        store       = VectorStore(),
+    )
+
+
 PIPELINE_FACTORIES = {
     "jira":        _build_jira_pipeline,
     "sharepoint":  _build_sharepoint_pipeline,
     "confluence":  _build_confluence_pipeline,
+    "servicenow":  _build_servicenow_pipeline,
 }
 
 
