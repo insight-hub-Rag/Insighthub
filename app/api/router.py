@@ -39,6 +39,7 @@ class SyncRequest(BaseModel):
     project_key:   Optional[str] = None
     list_title:    Optional[str] = None
     space_key:     Optional[str] = None
+    table_name:    Optional[str] = None
     updated_after: Optional[str] = None
 
 
@@ -322,4 +323,4 @@ async def save_conversation_message(
     except Exception as exc:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-
+

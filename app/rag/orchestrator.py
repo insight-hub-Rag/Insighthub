@@ -22,8 +22,10 @@ from app.rag.generator.generator import Generator
 
 logger = logging.getLogger(__name__)
 
-# Seuil de confiance en dessous duquel une décision du Rule Router
-# est considérée trop incertaine — on passe alors au LLM Router.
+# Le Rule Router ne renvoie plus que deux cas : None (aucun ID détecté)
+# ou confidence=1.0 (ID détecté, 100% fiable). Ce seuil ne sert donc
+# plus qu'à documenter l'intention et à rester robuste si le Rule
+# Router évolue un jour pour retourner d'autres niveaux de confiance.
 RULE_ROUTER_MIN_CONFIDENCE = 0.7
 
 
@@ -50,8 +52,20 @@ class Orchestrator:
 
         logger.info(
             f"[Orchestrator] Routage : sources={routing.sources} "
-            f"via={routing.router_used} confiance={routing.confidence}"
+            f"via={routing.router_used} confiance={routing.confidence} "
+            f"in_scope={routing.in_scope}"
         )
+
+        # 2bis. Question hors périmètre entreprise — inutile de lancer
+        # les agents, la fusion et le reranker pour finir par "je n'ai
+        # rien trouvé" : on répond directement, sans source (cohérent :
+        # aucune donnée n'a été consultée).
+        if not routing.in_scope:
+            logger.info(
+                "[Orchestrator] Question hors scope → réponse directe, "
+                "pipeline RAG sauté"
+            )
+            return self.generator.generate_out_of_scope(question)
 
         # 3. Agent Manager — lance les agents des sources choisies en parallèle
         agent_results = await self.agent_manager.run(preprocessed, routing)

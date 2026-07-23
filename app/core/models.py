@@ -54,18 +54,6 @@ class SyncResult:
 
 
 @dataclass
-class SearchResult:
-    """Un chunk trouvé par la recherche sémantique."""
-    chunk_id:    str
-    source_type: str
-    document_id: str
-    content:     str
-    title:       str
-    similarity:  float
-    metadata:    dict = field(default_factory=dict)
-
-
-@dataclass
 class RAGResponse:
     """Réponse complète du pipeline RAG."""
     question:    str
@@ -104,6 +92,9 @@ class RoutingDecision:
     confidence: float = 1.0
     router_used: str = "rule"                # "rule" | "llm"
     reasoning: Optional[str] = None          # utile pour debug / soutenance
+    in_scope: bool = True                    # False = question hors périmètre
+                                              # entreprise -> l'orchestrateur
+                                              # court-circuite tout le pipeline
 
 
 @dataclass

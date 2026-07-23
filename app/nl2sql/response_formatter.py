@@ -80,7 +80,13 @@ RÉSULTAT BRUT :
 Reformule ce résultat en une réponse claire et naturelle en français,
 comme si tu répondais directement à la question. Ne mentionne pas la
 requête SQL. Reste concis (2-4 phrases). Si le résultat contient des
-chiffres, mets-les en avant clairement."""
+chiffres, mets-les en avant clairement.
+
+IMPORTANT : n'invente et ne mentionne AUCUN identifiant, référence
+externe, nom de système (Jira, Confluence...) ou détail qui n'apparaît
+pas explicitement et littéralement dans le RÉSULTAT BRUT ci-dessus.
+Si le résultat ne contient qu'un titre et des colonnes internes,
+utilise uniquement ces valeurs telles quelles."""
 
     @staticmethod
     def _fallback_raw_summary(outcome: ExecutionOutcome) -> str:
