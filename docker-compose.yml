@@ -13,6 +13,7 @@ services:
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/1_init.sql:ro
       - ./postgres/init_nl2sql.sql:/docker-entrypoint-initdb.d/2_init_nl2sql.sql:ro
       - ./postgres/init_nl2sql_test_data.sql:/docker-entrypoint-initdb.d/3_init_nl2sql_test_data.sql:ro
+      - ./postgres/init_nl2sql_test_data.sh:/docker-entrypoint-initdb.d/4_init_nl2sql_test_data.sh:ro
     ports:
       - "5432:5432"
     healthcheck:

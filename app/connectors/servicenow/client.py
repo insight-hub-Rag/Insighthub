@@ -2,7 +2,6 @@ from typing import AsyncGenerator, Optional
 
 import httpx
 from loguru import logger
-
 from config import settings
 
 # Champs récupérés par défaut pour une table de type "incident".

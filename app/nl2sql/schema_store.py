@@ -135,18 +135,10 @@ class SchemaStore:
 
     @staticmethod
     def _deserialize(row) -> SchemaScanResult:
-        # asyncpg décode automatiquement les colonnes JSONB en objets
-        # Python natifs (list/dict) au niveau du driver — indépendamment
-        # de ce qu'on avait nous-mêmes sérialisé côté écriture avec
-        # json.dumps(). row["schema_json"] arrive donc déjà comme une
-        # `list`, pas une str : appeler json.loads() dessus provoque
-        # "the JSON object must be str, bytes or bytearray, not list".
-        # On ne parse que si c'est encore une chaîne (robuste aussi si
-        # le driver ou la config de la colonne change plus tard).
-        schema_json = row["schema_json"]
-        raw_tables = (
-            json.loads(schema_json) if isinstance(schema_json, (str, bytes)) else schema_json
-        )
+        # asyncpg désérialise automatiquement les colonnes jsonb en objets Python
+        # (list/dict) — json.loads échouerait sur une list. On gère les deux cas.
+        raw_json = row["schema_json"]
+        raw_tables = raw_json if isinstance(raw_json, list) else json.loads(raw_json)
         tables = [
             TableInfo(
                 name=t["name"],

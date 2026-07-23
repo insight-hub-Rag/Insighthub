@@ -37,7 +37,7 @@ QUESTIONS = [
     "IH-2",
     "montre-moi les tickets urgents dans Jira",
     "combien de tickets non résolus a le projet InsightHub ?",
-    "quel est le salaire de Karim ?",
+    "quel est le salaire de Karim Idrissi ?",
     "combien d'employés dans l'équipe DEV ?",
     "quoi de neuf sur Confluence à propos du process de sprint ?",
     "bonjour",

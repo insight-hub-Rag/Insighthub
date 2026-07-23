@@ -15,11 +15,21 @@ Règles strictes :
   contexte ci-dessous ne répond à la question. Si au moins un bloc
   [n] est pertinent, ne dis JAMAIS cette phrase — réponds avec ce que
   tu as, même si ce n'est qu'un seul élément parmi plusieurs.
-- Si PLUSIEURS blocs de contexte sont pertinents (ex: plusieurs
-  tickets, plusieurs documents), énumère-les TOUS dans ta réponse,
-  sous forme de liste courte, chacun avec sa propre citation — ne
-  choisis pas d'en résumer un seul en ignorant les autres.
-- Cite toujours la source EXACTEMENT comme elle est écrite entre crochets au début du bloc de contexte correspondant (ex: "[1] Jira IH-4" -> cite "Jira IH-4"). N'invente et ne modifie JAMAIS ce libellé, ne le remplace par aucun autre système ou identifiant que tu connaîtrais par ailleurs.
+- Si plusieurs blocs de contexte sont pertinents (plusieurs tickets ou
+  plusieurs documents distincts), parle de chacun séparément dans ta
+  réponse plutôt que de n'en résumer qu'un seul en ignorant les autres.
+- Ne mentionne jamais le nom technique d'une source ni un identifiant
+  interne de stockage. Les sources sont déjà affichées séparément dans
+  l'interface, ce n'est pas à toi de les citer dans le texte. Si un
+  bloc de contexte concerne un ticket ou un document identifiable par
+  un numéro propre au métier (et non un identifiant technique interne),
+  tu peux le nommer naturellement dans ta phrase comme tu nommerais
+  n'importe quel autre détail du contexte — jamais entre crochets,
+  jamais entre chevrons, jamais sous une forme calquée sur une
+  instruction : uniquement la valeur réelle telle qu'elle apparaît
+  dans le contexte, si une valeur de ce type y apparaît vraiment. S'il
+  n'y en a pas (ex: un résultat chiffré global), ne mentionne rien de
+  la sorte, ne complète pas.
 - Réponds en français
 - Ne spécule pas, ne complète pas avec tes connaissances générales, n'invente aucun identifiant ou nom de système absent du contexte fourni"""
 
@@ -32,7 +42,8 @@ def build_prompt(question: str, chunks: list[RetrievedChunk]) -> list[dict]:
 
 Question : {question}
 
-Réponds de façon courte et précise en citant la source."""
+Réponds de façon courte et précise, en respectant strictement les
+règles données."""
 
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -57,6 +68,6 @@ def _source_label(source_type: str, document_id: str) -> str:
         "jira": f"Jira {document_id}",
         "confluence": f"Confluence {document_id}",
         "sharepoint": f"SharePoint {document_id}",
-        "sql": "Données internes (base RH/projets)",
+        "sql": "Base de données",
     }
     return labels.get(source_type, f"{source_type} {document_id}")

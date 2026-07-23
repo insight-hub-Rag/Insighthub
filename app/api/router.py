@@ -17,6 +17,7 @@ from app.connectors.servicenow.pipeline import ServiceNowConnector
 from app.connectors.servicenow.transformer import ServiceNowTransformer
 from app.db.database import get_db
 from app.db.vector_store import VectorStore
+from app.db import chat_history as chat_history_repo
 from app.ingestion.embeddings.embedder import Embedder
 from app.ingestion.pipeline import IngestionPipeline
 from app.rag.orchestrator import Orchestrator
@@ -45,6 +46,20 @@ class SyncRequest(BaseModel):
 class SearchRequest(BaseModel):
     question: str
     user_id:  Optional[str] = None
+
+
+class ChatConversationCreate(BaseModel):
+    id:          str
+    title:       str
+    source:      str = ""
+    latency_ms:  int = 0
+    group_label: str = "Aujourd'hui"
+
+
+class ChatConversationPatch(BaseModel):
+    title:    Optional[str]  = None
+    favorite: Optional[bool] = None
+    trashed:  Optional[bool] = None
 
 
 def _build_jira_pipeline(request: SyncRequest) -> IngestionPipeline:
@@ -76,7 +91,7 @@ def _build_confluence_pipeline(request: SyncRequest) -> IngestionPipeline:
 
 def _build_servicenow_pipeline(request: SyncRequest) -> IngestionPipeline:
     return IngestionPipeline(
-        connector   = ServiceNowConnector(table=request.table_name),
+        connector   = ServiceNowConnector(),
         transformer = ServiceNowTransformer(),
         embedder    = Embedder(),
         store       = VectorStore(),
@@ -197,3 +212,115 @@ async def nl2sql_monitoring_queries(
     except Exception as exc:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# ==================================================================
+# Chat history — persistance des conversations
+# ==================================================================
+
+@router.get("/chat/history", summary="Récupérer l'historique des conversations")
+async def get_chat_history(
+    limit: int = 100,
+    include_trashed: bool = False,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        conversations = await chat_history_repo.get_conversations(
+            db, limit=limit, include_trashed=include_trashed
+        )
+        return {"conversations": conversations}
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/chat/history", summary="Créer ou mettre à jour une conversation")
+async def save_chat_conversation(
+    request: ChatConversationCreate,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        saved = await chat_history_repo.save_conversation(db, request.model_dump())
+        return saved
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.patch("/chat/history/{conv_id}", summary="Mettre à jour une conversation (titre, favori, corbeille)")
+async def update_chat_conversation(
+    conv_id: str,
+    request: ChatConversationPatch,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        patch = {k: v for k, v in request.model_dump().items() if v is not None}
+        updated = await chat_history_repo.update_conversation(db, conv_id, patch)
+        if updated is None:
+            raise HTTPException(status_code=404, detail=f"Conversation '{conv_id}' introuvable")
+        return updated
+    except HTTPException:
+        raise
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.delete("/chat/history/{conv_id}", summary="Supprimer définitivement une conversation")
+async def delete_chat_conversation(
+    conv_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        deleted = await chat_history_repo.delete_conversation(db, conv_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Conversation '{conv_id}' introuvable")
+        return {"status": "deleted", "id": conv_id}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# ── Chat messages (échanges Q/R) ──────────────────────────────────────────────
+
+class ChatMessageCreate(BaseModel):
+    id:              str
+    conversation_id: str
+    role:            str          # "user" | "assistant"
+    content:         str
+    sources:         list  = []
+    latency_ms:      int   = 0
+
+
+@router.get("/chat/history/{conv_id}/messages", summary="Messages d'une conversation")
+async def get_conversation_messages(
+    conv_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        messages = await chat_history_repo.get_messages(db, conv_id)
+        return {"messages": messages}
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/chat/history/{conv_id}/messages", summary="Sauvegarder un message")
+async def save_conversation_message(
+    conv_id: str,
+    request: ChatMessageCreate,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        if request.conversation_id != conv_id:
+            raise HTTPException(status_code=400, detail="conv_id mismatch")
+        saved = await chat_history_repo.save_message(db, request.model_dump())
+        return saved
+    except HTTPException:
+        raise
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
