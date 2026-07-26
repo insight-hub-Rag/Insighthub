@@ -60,7 +60,7 @@ class BedrockEmbeddingBackend:
 
 
 def _build_backend() -> EmbeddingBackend:
-    if settings.embedding_provider == "bedrock" and settings.aws_access_key_id:
+    if settings.embedding_provider == "bedrock":
         return BedrockEmbeddingBackend()
     logger.info("[Embedder] Fallback local")
     return LocalEmbeddingBackend(model_name=settings.embedding_model)
