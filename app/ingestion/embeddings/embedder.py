@@ -28,7 +28,7 @@ class LocalEmbeddingBackend:
         return [v.tolist() for v in vectors]
 
 
-class BedrockEmbeddingBackend:
+""" class BedrockEmbeddingBackend:
     def __init__(self):
         import boto3
         self._client = boto3.client(
@@ -38,8 +38,16 @@ class BedrockEmbeddingBackend:
             aws_secret_access_key = settings.aws_secret_access_key,
         )
         self._model_id = "amazon.titan-embed-text-v2:0"
+        logger.info(f"[Embedder] Bedrock Titan Embed v2 | region={settings.aws_region}") """
+class BedrockEmbeddingBackend:
+    def __init__(self):
+        import boto3
+        self._client = boto3.client(
+            "bedrock-runtime",
+            region_name = settings.aws_region,
+        )
+        self._model_id = "amazon.titan-embed-text-v2:0"
         logger.info(f"[Embedder] Bedrock Titan Embed v2 | region={settings.aws_region}")
-
     def encode(self, texts: list[str]) -> list[list[float]]:
         vectors = []
         for text in texts:
