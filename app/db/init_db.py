@@ -8,6 +8,11 @@ async def initialize_database_schema() -> None:
         return
 
     async with AsyncSessionLocal() as session:
+        # Une base CI fraîche n'exécute pas les scripts
+        # docker-entrypoint-initdb.d du docker-compose local. Les types
+        # vectoriels doivent donc être disponibles avant la création des
+        # tables *.embeddings.
+        await session.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await session.execute(text("CREATE SCHEMA IF NOT EXISTS jira"))
         await session.execute(text("CREATE SCHEMA IF NOT EXISTS servicenow"))
         await session.execute(text("CREATE SCHEMA IF NOT EXISTS sharepoint"))
