@@ -1,20 +1,23 @@
-
-
 from typing import Any
 
-from app.connectors.jira.pipeline import JiraConnector
-from app.connectors.jira.transformer import JiraTransformer
 from app.connectors.confluence.pipeline import ConfluenceConnector
 from app.connectors.confluence.transformer import ConfluenceTransformer
+from app.connectors.jira.pipeline import JiraConnector
+from app.connectors.jira.transformer import JiraTransformer
 from app.connectors.sharepoint.pipeline import SharePointConnector
 from app.connectors.sharepoint.transformer import SharePointTransformer
 
 
 class SyncNotSupportedError(Exception):
-   
+    """Exception levée lorsqu'une synchronisation n'est pas supportée."""
+    pass
 
 
-def build_connectors_for_sync(source_type: str, client: Any, sync_scope: dict) -> list:
+def build_connectors_for_sync(
+    source_type: str,
+    client: Any,
+    sync_scope: dict,
+) -> list:
     if source_type == "jira":
         projects = sync_scope.get("projects") or []
         if not projects:
@@ -55,8 +58,13 @@ def build_connectors_for_sync(source_type: str, client: Any, sync_scope: dict) -
 def build_transformer(source_type: str):
     if source_type == "jira":
         return JiraTransformer()
+
     if source_type == "confluence":
         return ConfluenceTransformer()
+
     if source_type == "sharepoint":
         return SharePointTransformer()
-    raise SyncNotSupportedError(f"Aucun transformer disponible pour : {source_type!r}")
+
+    raise SyncNotSupportedError(
+        f"Aucun transformer disponible pour : {source_type!r}"
+    )
