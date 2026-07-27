@@ -1,12 +1,4 @@
-"""
-Orchestrator — assemble tout le pipeline RAG en une chaîne de fonctions
-séquentielle (pas encore LangGraph, volontairement — LangGraph sera
-ajouté à la toute fin, une fois chaque composant validé isolément).
 
-Flux : Preprocessor → Rule Router → (LLM Router si besoin) →
-       Agent Manager → Global Fusion → Reranker (sauf match ID exact) →
-       Generator
-"""
 
 import logging
 import time
@@ -39,7 +31,16 @@ class Orchestrator:
         self.reranker = CrossEncoderReranker()
         self.generator = Generator()
 
-    async def ask(self, question: str, user_id: str | None = None) -> RAGResponse:
+    async def ask(
+        self,
+        question: str,
+        user_id: str | None = None,
+        forced_sources: list[str] | None = None,
+        forced_instance_id: str | None = None,
+    ) -> RAGResponse:
+        """
+        `forced_sources` : utilisé UNIQUEMENT par le chat scopé specifique
+        """
         t_start = time.time()
 
         # 1. Preprocessing
@@ -50,10 +51,22 @@ class Orchestrator:
         if routing is None or routing.confidence < RULE_ROUTER_MIN_CONFIDENCE:
             routing = self.llm_router.route(preprocessed)
 
+        if forced_sources is not None:
+            # Chat scopé à une instance : la source est déjà connue à
+            # 100% (celle du connecteur testé), pas la peine de laisser
+            # le routeur en décider — on garde juste ses filtres/scope.
+            routing.sources = forced_sources
+            routing.in_scope = True
+
+        if forced_instance_id is not None:
+            routing.filters = {**routing.filters, "connector_instance_id": forced_instance_id}
+
         logger.info(
             f"[Orchestrator] Routage : sources={routing.sources} "
             f"via={routing.router_used} confiance={routing.confidence} "
             f"in_scope={routing.in_scope}"
+            + (" (source forcée)" if forced_sources is not None else "")
+            + (" (instance forcée)" if forced_instance_id is not None else "")
         )
 
         # 2bis. Question hors périmètre entreprise — inutile de lancer
@@ -68,6 +81,7 @@ class Orchestrator:
             return self.generator.generate_out_of_scope(question)
 
         # 3. Agent Manager — lance les agents des sources choisies en parallèle
+
         agent_results = await self.agent_manager.run(preprocessed, routing)
 
         if not agent_results:
@@ -108,8 +122,15 @@ class Orchestrator:
                 top_n=8,
             )
 
-        # 6. Génération finale (le Context Builder est appelé à l'intérieur)
-        response = self.generator.generate(question, reranked_chunks)
+       
+        _SCOPE_ONLY_FILTER_KEYS = {"connector_instance_id", "external_id"}
+        real_filters = {
+            k: v for k, v in routing.filters.items() if k not in _SCOPE_ONLY_FILTER_KEYS
+        }
+        response = self.generator.generate(
+            question, reranked_chunks,
+            filters_were_requested=bool(real_filters),
+        )
 
         total_latency = round((time.time() - t_start) * 1000, 1)
         logger.info(f"[Orchestrator] Pipeline complet en {total_latency}ms")

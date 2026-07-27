@@ -1,23 +1,3 @@
-"""
-Script d'évaluation de l'ORCHESTRATEUR COMPLET — pas un test pytest,
-un script à lancer à la main avec ta vraie base de données et tes
-vraies données indexées (Jira/Confluence/SharePoint/SQL synchronisés).
-
-Contrairement à eval_routing.py (qui ne teste QUE la décision de
-routage), celui-ci fait tourner le pipeline ENTIER pour chaque question
-: Preprocessor → Router → Agents → Fusion → Reranker → Generator — et
-affiche la réponse finale, les sources utilisées, et la latence.
-
-Il n'y a PAS d'assertion automatique de "bonne réponse" ici : la
-justesse du contenu dépend de tes vraies données (ce qui est réellement
-dans ton Jira/Confluence/base SQL). C'est un outil de RELECTURE
-MANUELLE — à toi de juger si chaque réponse est correcte, en t'appuyant
-sur les sources citées et la latence de chaque étape.
-
-Usage :
-    python scripts/eval_orchestrator.py
-    python scripts/eval_orchestrator.py --limit 5   # teste seulement les 5 premiers cas
-"""
 
 import argparse
 import asyncio

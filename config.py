@@ -21,6 +21,22 @@ class Settings(BaseSettings):
     jira_project_keys: str = ""
     jira_max_results: int  = 50
 
+    # ── Admin des connecteurs (écran Connecteurs) ───────────────────────
+    # Clé Fernet pour chiffrer les credentials stockés en base
+    # (connector_configs.auth_encrypted) — jamais en clair. Générer une
+    # vraie clé en prod avec : python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    connector_encryption_key: str = ""
+    # Secret partagé optionnel entre la Lambda de sync planifiée et cet
+    # endpoint (header X-Sync-Secret). Vide = pas de contrôle (dev) —
+    # à définir en prod pour empêcher un déclenchement de sync non
+    # autorisé par n'importe qui connaissant l'URL.
+    lambda_sync_secret: str = ""
+    # ARN de la Lambda sync_trigger déployée (infrastructure/lambda/).
+    # Vide = EventBridge désactivé silencieusement (dev sans AWS réel) —
+    # le CRUD des connecteurs continue de fonctionner normalement, juste
+    # sans planification automatique.
+    sync_lambda_arn: str = ""
+
     # ── Confluence ──────────────────────────────────────────────────────
     confluence_url: str          = ""
     confluence_user: str         = ""

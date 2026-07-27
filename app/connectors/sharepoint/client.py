@@ -7,16 +7,20 @@ from config import settings
 
 
 class SharePointClient:
-    """
-    Client SharePoint bas niveau pour récupérer des éléments de liste.
+  
+  
 
-    Les appels sont synchrones via Office365-REST-Python-Client, mais le
-    connecteur expose une interface async pour rester compatible avec le
-    pipeline existant.
-    """
+    def __init__(
+        self,
+        site_url: Optional[str] = None,
+        client_id: Optional[str] = None,
+        client_secret: Optional[str] = None,
+    ):
+      
+        self.site_url = (site_url or settings.sharepoint_site_url).strip().rstrip("/")
+        _client_id = client_id or settings.sharepoint_client_id
+        _client_secret = client_secret or settings.sharepoint_client_secret
 
-    def __init__(self):
-        self.site_url = settings.sharepoint_site_url.rstrip("/")
         # Lazy import of Office365 library so the application can start
         # even if the dependency is missing in the runtime (useful during
         # iterative development). If the package is not available the
@@ -30,10 +34,7 @@ class SharePointClient:
             self._credential = None
             return
 
-        self._credential = ClientCredential(
-            settings.sharepoint_client_id,
-            settings.sharepoint_client_secret,
-        )
+        self._credential = ClientCredential(_client_id, _client_secret)
         self._ctx = ClientContext(self.site_url).with_credentials(self._credential)
 
     async def fetch_all_items(
@@ -58,12 +59,7 @@ class SharePointClient:
         return await asyncio.to_thread(self._test_connection_sync)
 
     def _get_items(self, list_title: str, updated_after: Optional[str]) -> List[dict]:
-        # Import CamlQuery lazily because some runtime images may not include
-        # the CAML helper module. If unavailable we fall back to fetching all
-        # items and client-side filtering (less efficient) or return a clear
-        # error depending on use-case. Here we try to import and if it fails
-        # we proceed without CAML and fetch items without the updated_after
-        # filter.
+      
         try:
             from office365.sharepoint.caml.caml_query import CamlQuery
         except Exception:

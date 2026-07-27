@@ -14,38 +14,33 @@ class ConfluenceClient:
     métier qu'on en tirera ensuite (ça, c'est le rôle du transformer).
 
     Authentification identique à Jira : email + jeton API Atlassian
-    (le MÊME jeton fonctionne pour Jira et Confluence).
+    
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        url: Optional[str] = None,
+        user: Optional[str] = None,
+        api_token: Optional[str] = None,
+        max_results: Optional[int] = None,
+    ):
+    
         # On travaille avec l'origine du site (sans /wiki). Les liens de
         # pagination renvoyés par l'API (_links.next) commencent déjà par
         # /wiki, donc on préfixe tout par l'origine seule pour éviter /wiki/wiki.
-        origin = settings.confluence_url.rstrip("/")
+        origin = (url or settings.confluence_url).strip().rstrip("/")
         if origin.endswith("/wiki"):
             origin = origin[: -len("/wiki")]
         self.origin = origin
-        self.auth = (settings.confluence_user, settings.confluence_api_token)
+        self.auth = ((user or settings.confluence_user).strip(), (api_token or settings.confluence_api_token).strip())
+        self.max_results = max_results or settings.confluence_max_results
         self.headers = {"Accept": "application/json"}
 
     async def fetch_all_pages(
         self, space_key: str, updated_after: Optional[str] = None
     ) -> AsyncGenerator[dict, None]:
-        """
-        Génère les pages d'un espace Confluence, page par page.
-
-        Pagination par curseur (API v2) : on suit le lien relatif
-        `_links.next` tant que le serveur en renvoie un. Le contenu est
-        demandé au format `storage` (XHTML Confluence), converti en texte
-        plus tard par le transformer.
-
-        `updated_after` est accepté pour rester cohérent avec l'interface
-        du connecteur, mais l'endpoint v2 des pages d'un espace ne filtre
-        pas facilement par date : on fait un full sync et on laisse le
-        transformer/pipeline gérer l'idempotence via l'upsert. Le delta
-        sync (via CQL) sera une amélioration future, comme pour Jira.
-        """
-        max_results = settings.confluence_max_results
+       
+        max_results = self.max_results
         total_fetched = 0
 
         logger.info(f"[Confluence] Début fetch | space={space_key}")

@@ -28,7 +28,7 @@ async def initialize_database_schema() -> None:
                 chunk_id TEXT PRIMARY KEY,
                 document_id UUID NOT NULL REFERENCES jira.documents(id) ON DELETE CASCADE,
                 content TEXT NOT NULL,
-                embedding vector(1024) NOT NULL,
+                embedding vector(384) NOT NULL,
                 metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
@@ -50,7 +50,7 @@ async def initialize_database_schema() -> None:
                 chunk_id TEXT PRIMARY KEY,
                 document_id UUID NOT NULL REFERENCES servicenow.documents(id) ON DELETE CASCADE,
                 content TEXT NOT NULL,
-                embedding vector(1024) NOT NULL,
+                embedding vector(384) NOT NULL,
                 metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
@@ -72,90 +72,82 @@ async def initialize_database_schema() -> None:
                 chunk_id TEXT PRIMARY KEY,
                 document_id UUID NOT NULL REFERENCES sharepoint.documents(id) ON DELETE CASCADE,
                 content TEXT NOT NULL,
-                embedding vector(1024) NOT NULL,
+                embedding vector(384) NOT NULL,
                 metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """))
 
-        # ── NL2SQL monitoring tables (public schema, insighthub DB) ────────────
+        # connector_configs 
+        
+        await session.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
+
         await session.execute(text("""
-            CREATE TABLE IF NOT EXISTS nl2sql_schema_snapshots (
-                id              BIGSERIAL PRIMARY KEY,
-                connection_id   TEXT NOT NULL,
-                engine_dialect  TEXT NOT NULL,
-                schema_json     JSONB NOT NULL,
-                scanned_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-                is_active       BOOLEAN NOT NULL DEFAULT TRUE
+            CREATE TABLE IF NOT EXISTS connector_configs (
+                id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                source_type             TEXT NOT NULL,
+                instance_label          TEXT NOT NULL,
+                is_enabled              BOOLEAN NOT NULL DEFAULT TRUE,
+                auth_encrypted          TEXT NOT NULL,
+                sync_scope              JSONB NOT NULL DEFAULT '{}'::jsonb,
+                sync_frequency_minutes  INTEGER NOT NULL DEFAULT 15,
+                last_sync_at            TIMESTAMPTZ,
+                last_sync_status        TEXT,
+                last_sync_stats         JSONB,
+                last_error              TEXT,
+                created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (source_type, instance_label)
             )
         """))
 
-        await session.execute(text("""
-            CREATE INDEX IF NOT EXISTS idx_nl2sql_snapshots_active
-                ON nl2sql_schema_snapshots (connection_id, is_active)
-        """))
+        await session.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_connector_configs_source_type "
+            "ON connector_configs (source_type)"
+        ))
+        await session.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_connector_configs_enabled "
+            "ON connector_configs (is_enabled) WHERE is_enabled = TRUE"
+        ))
 
-        await session.execute(text("""
-            CREATE TABLE IF NOT EXISTS nl2sql_query_execution_logs (
-                id                        BIGSERIAL PRIMARY KEY,
-                connection_id             TEXT NOT NULL,
-                natural_language_question TEXT NOT NULL,
-                generated_sql             TEXT NOT NULL,
-                engine_dialect            TEXT NOT NULL,
-                source_label              TEXT NOT NULL DEFAULT 'SQL Database',
-                status                    TEXT NOT NULL,
-                exec_time_ms              DOUBLE PRECISION,
-                suggested_improvement     TEXT,
-                error_message             TEXT,
-                created_at                TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """))
-
-        await session.execute(text("""
-            CREATE INDEX IF NOT EXISTS idx_nl2sql_logs_created_at
-                ON nl2sql_query_execution_logs (created_at DESC)
-        """))
-
-        await session.execute(text("""
-            CREATE INDEX IF NOT EXISTS idx_nl2sql_logs_status
-                ON nl2sql_query_execution_logs (status)
-        """))
-
-        # ── Chat conversations history ─────────────────────────────────────────
+        # chat_conversations / chat_messages — historique du chat (sidebar
+        # "Aujourd'hui"). Structure déduite exactement des requêtes SQL de
+        # app/db/chat_history.py (ce module existait déjà, sans jamais
+        # avoir été inclus dans un script d'auto-init nulle part — d'où
+        # la table qui disparaissait à chaque reset de volume, sans
+        # aucun moyen de la recréer automatiquement jusqu'à maintenant).
         await session.execute(text("""
             CREATE TABLE IF NOT EXISTS chat_conversations (
                 id           TEXT PRIMARY KEY,
-                title        TEXT NOT NULL,
+                title        TEXT NOT NULL DEFAULT '',
                 source       TEXT NOT NULL DEFAULT '',
-                latency_ms   INTEGER NOT NULL DEFAULT 0,
+                latency_ms   DOUBLE PRECISION NOT NULL DEFAULT 0,
                 created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-                group_label  TEXT NOT NULL DEFAULT 'Aujourd''hui',
+                group_label  TEXT NOT NULL DEFAULT '',
                 favorite     BOOLEAN NOT NULL DEFAULT FALSE,
                 trashed      BOOLEAN NOT NULL DEFAULT FALSE
             )
         """))
 
         await session.execute(text("""
-            CREATE INDEX IF NOT EXISTS idx_chat_conversations_created_at
-                ON chat_conversations (created_at DESC)
-        """))
-
-        # ── Chat messages (échanges Q/R par conversation) ──────────────────────
-        await session.execute(text("""
             CREATE TABLE IF NOT EXISTS chat_messages (
-                id              TEXT PRIMARY KEY,
-                conversation_id TEXT NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
-                role            TEXT NOT NULL,
-                content         TEXT NOT NULL,
-                sources         JSONB NOT NULL DEFAULT '[]'::jsonb,
-                latency_ms      INTEGER NOT NULL DEFAULT 0,
-                created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+                id               TEXT PRIMARY KEY,
+                conversation_id  TEXT NOT NULL,
+                role             TEXT NOT NULL,
+                content          TEXT NOT NULL DEFAULT '',
+                sources          JSONB NOT NULL DEFAULT '[]'::jsonb,
+                latency_ms       DOUBLE PRECISION NOT NULL DEFAULT 0,
+                created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """))
 
-        await session.execute(text("""
-            CREATE INDEX IF NOT EXISTS idx_chat_messages_conv_id
-                ON chat_messages (conversation_id, created_at ASC)
-        """))
+        await session.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_id "
+            "ON chat_messages (conversation_id)"
+        ))
+        await session.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_chat_conversations_trashed "
+            "ON chat_conversations (trashed, created_at DESC)"
+        ))
 
         await session.commit()

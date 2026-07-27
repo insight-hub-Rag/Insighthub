@@ -7,35 +7,27 @@ from config import settings
 
 
 class JiraClient:
-    """
-    Client HTTP bas niveau pour l'API REST Jira (v3).
-    Responsabilité unique : parler à l'API Jira et streamer les issues
-    brutes. Ne fait aucune transformation, ne connaît pas la structure
-    métier qu'on en tirera ensuite (ça, c'est le rôle du transformer).
-    """
+    
 
-    def __init__(self):
-        self.base_url = settings.jira_url.rstrip("/")
-        self.auth = (settings.jira_user, settings.jira_api_token)
+    def __init__(
+        self,
+        base_url: Optional[str] = None,
+        user: Optional[str] = None,
+        api_token: Optional[str] = None,
+        max_results: Optional[int] = None,
+    ):
+      
+        self.base_url = (base_url or settings.jira_url).strip().rstrip("/")
+        self.auth = ((user or settings.jira_user).strip(), (api_token or settings.jira_api_token).strip())
+        self.max_results = max_results or settings.jira_max_results
         self.headers = {"Accept": "application/json"}
 
     async def fetch_all_issues(
         self, project_key: str, updated_after: Optional[str] = None
     ) -> AsyncGenerator[dict, None]:
-        """
-        Génère les issues d'un projet Jira, page par page, via l'API
-        /rest/api/3/search/jql (l'ancien /rest/api/3/search a été retiré
-        par Atlassian — cf. https://developer.atlassian.com/changelog/#CHANGE-2046).
-
-        Pagination par `nextPageToken` (l'API ne retourne plus de `total` :
-        on s'arrête quand le serveur ne renvoie plus de token, ou qu'une
-        page revient vide).
-
-        Si `updated_after` est fourni, ne récupère que les issues modifiées
-        depuis cette date (delta sync).
-        """
+        
         jql = self._build_jql(project_key, updated_after)
-        max_results = settings.jira_max_results
+        max_results = self.max_results
         next_page_token: Optional[str] = None
         total_fetched = 0
 

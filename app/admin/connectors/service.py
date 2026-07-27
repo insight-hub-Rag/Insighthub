@@ -1,0 +1,311 @@
+
+
+import json
+import logging
+import time
+from typing import Any, Optional
+from uuid import UUID
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from config import settings
+from app.admin.connectors.client_factory import build_client
+from app.admin.connectors.crypto import (
+    encrypt_auth_fields,
+    decrypt_auth_fields,
+    mask_auth_fields,
+    MASK_PLACEHOLDER,
+)
+from app.admin.connectors.sync_factory import build_connectors_for_sync, build_transformer, SyncNotSupportedError
+
+logger = logging.getLogger(__name__)
+from app.admin.connectors.models import (
+    ConnectorCreate,
+    ConnectorDetail,
+    ConnectorStatus,
+    ConnectorSummary,
+    ConnectorUpdate,
+    SyncStats,
+)
+from app.admin.connectors.repository import ConnectorRepository
+
+# Champs modifiables par PATCH — whitelist explicite, jamais construite
+# depuis les clés brutes du payload (protection contre l'injection de
+# colonnes arbitraires dans le UPDATE SQL du repository).
+_UPDATABLE_FIELDS = {"instance_label", "sync_scope", "sync_frequency_minutes"}
+
+
+class ConnectorService:
+
+    def __init__(self, repository: Optional[ConnectorRepository] = None):
+        self._repo = repository or ConnectorRepository()
+
+    # ------------------------------------------------------------
+    # Lecture
+    # ------------------------------------------------------------
+
+    async def list_connectors(self, session: AsyncSession) -> list[ConnectorSummary]:
+        rows = await self._repo.list_all(session)
+        return [self._to_summary(row) for row in rows]
+
+    async def get_connector(
+        self, session: AsyncSession, connector_id: UUID
+    ) -> Optional[ConnectorDetail]:
+        row = await self._repo.get_by_id(session, connector_id)
+        return self._to_detail(row) if row else None
+
+    # ------------------------------------------------------------
+    # Écriture
+    # ------------------------------------------------------------
+
+    async def create_connector(
+        self, session: AsyncSession, payload: ConnectorCreate
+    ) -> ConnectorDetail:
+        auth_encrypted = encrypt_auth_fields(payload.auth_fields)
+        row = await self._repo.create(
+            session,
+            source_type=payload.source_type,
+            instance_label=payload.instance_label,
+            auth_encrypted=auth_encrypted,
+            sync_scope=payload.sync_scope,
+            sync_frequency_minutes=int(payload.sync_frequency_minutes),
+        )
+        self._sync_eventbridge_rule(row)
+        return self._to_detail(row)
+
+    async def update_connector(
+        self, session: AsyncSession, connector_id: UUID, payload: ConnectorUpdate
+    ) -> Optional[ConnectorDetail]:
+        fields: dict[str, Any] = {}
+
+        if payload.instance_label is not None:
+            fields["instance_label"] = payload.instance_label
+        if payload.sync_scope is not None:
+            fields["sync_scope"] = json.dumps(payload.sync_scope)
+        if payload.sync_frequency_minutes is not None:
+            fields["sync_frequency_minutes"] = int(payload.sync_frequency_minutes)
+
+        # auth_fields géré à part : nécessite un re-chiffrement, pas une
+        # simple valeur de colonne comme les autres champs de `fields`.
+
+        if payload.auth_fields is not None:
+            existing_row = await self._repo.get_by_id(session, connector_id)
+            existing_auth = (
+                decrypt_auth_fields(existing_row["auth_encrypted"])
+                if existing_row else {}
+            )
+            merged_auth = {**existing_auth}
+            for key, value in payload.auth_fields.items():
+                if value != MASK_PLACEHOLDER:
+                    merged_auth[key] = value
+            fields["auth_encrypted"] = encrypt_auth_fields(merged_auth)
+
+       
+        safe_fields = {
+            k: v for k, v in fields.items()
+            if k in _UPDATABLE_FIELDS or k == "auth_encrypted"
+        }
+
+        row = await self._repo.update(session, connector_id, safe_fields)
+        if row is None:
+            return None
+        # Seulement si la fréquence a réellement changé 
+        
+        if "sync_frequency_minutes" in safe_fields:
+            self._sync_eventbridge_rule(row)
+        return self._to_detail(row)
+
+    async def toggle_connector(
+        self, session: AsyncSession, connector_id: UUID, enabled: bool
+    ) -> Optional[ConnectorDetail]:
+        row = await self._repo.update(session, connector_id, {"is_enabled": enabled})
+        if row is None:
+            return None
+        self._sync_eventbridge_rule(row)
+        return self._to_detail(row)
+
+    async def delete_connector(self, session: AsyncSession, connector_id: UUID) -> bool:
+        self._delete_eventbridge_rule(str(connector_id))
+        return await self._repo.delete(session, connector_id)
+
+    # ------------------------------------------------------------
+    # EventBridge
+    # ------------------------------------------------------------
+
+    @staticmethod
+    def _sync_eventbridge_rule(row: dict[str, Any]) -> None:
+        if not settings.sync_lambda_arn:
+            return
+        try:
+            from infrastructure.eventbridge import rules
+            rules.create_or_update_rule(
+                connector_id=str(row["id"]),
+                frequency_minutes=row["sync_frequency_minutes"],
+                lambda_arn=settings.sync_lambda_arn,
+                enabled=row["is_enabled"],
+            )
+        except Exception as e:
+            logger.error(
+                f"[ConnectorService] Échec synchronisation règle EventBridge "
+                f"pour connector_id={row['id']} : {e}"
+            )
+
+    @staticmethod
+    def _delete_eventbridge_rule(connector_id: str) -> None:
+        if not settings.sync_lambda_arn:
+            return
+        try:
+            from infrastructure.eventbridge import rules
+            rules.delete_rule(connector_id)
+        except Exception as e:
+            logger.error(
+                f"[ConnectorService] Échec suppression règle EventBridge "
+                f"pour connector_id={connector_id} : {e}"
+            )
+
+    # ------------------------------------------------------------
+    # Actions (Phase 2)
+    # ------------------------------------------------------------
+
+    async def test_connection(self, session: AsyncSession, connector_id: UUID) -> bool:
+        """
+        Instancie le vrai client (Jira/Confluence/SharePoint/ServiceNow)
+        avec la config déchiffrée de CETTE instance précise, et appelle
+        son .test_connection() existant. Ne synchronise rien, ne
+        modifie pas la base — juste un ping d'authentification.
+        Retourne False (au lieu de laisser planter) si le connecteur
+        n'existe pas ou si l'appel réseau échoue pour une raison
+        quelconque — la cause précise est déjà loguée par le client
+        lui-même (cf. client.test_connection()).
+        """
+        row = await self._repo.get_by_id(session, connector_id)
+        if row is None:
+            return False
+
+        auth_fields = decrypt_auth_fields(row["auth_encrypted"])
+        client = build_client(row["source_type"], auth_fields)
+        return await client.test_connection()
+
+    async def trigger_sync(self, session: AsyncSession, connector_id: UUID) -> dict[str, Any]:
+        """
+        Déclenche une synchronisation complète pour CETTE instance
+        précise (peut couvrir plusieurs projets/espaces/listes selon
+        sync_scope). Met à jour last_sync_* dans tous les cas (succès
+        ou échec), pour que l'UI reflète toujours le dernier essai réel.
+        """
+        row = await self._repo.get_by_id(session, connector_id)
+        if row is None:
+            raise ValueError("Connecteur introuvable")
+
+        t0 = time.time()
+        auth_fields = decrypt_auth_fields(row["auth_encrypted"])
+        client = build_client(row["source_type"], auth_fields)
+        sync_scope = row["sync_scope"] or {}
+
+        aggregated = {"total_fetched": 0, "total_documents": 0, "total_chunks": 0}
+        success = True
+        error_message: Optional[str] = None
+
+        try:
+            connectors = build_connectors_for_sync(row["source_type"], client, sync_scope)
+            transformer = build_transformer(row["source_type"])
+
+            from app.ingestion.embeddings.embedder import Embedder
+            from app.db.vector_store import VectorStore
+            from app.ingestion.pipeline import IngestionPipeline
+
+            embedder = Embedder()
+            store = VectorStore()
+
+            errors = []
+            for connector in connectors:
+                pipeline = IngestionPipeline(
+                    connector, transformer, embedder, store,
+                    connector_instance_id=str(connector_id),
+                )
+                result = await pipeline.run()
+                aggregated["total_fetched"] += result.total_fetched
+                aggregated["total_documents"] += result.total_documents
+                aggregated["total_chunks"] += result.total_chunks
+                if not result.success:
+                    errors.append(result.error_message or "erreur inconnue")
+
+            if errors:
+                success = False
+                error_message = "; ".join(errors)
+
+        except SyncNotSupportedError as e:
+            success = False
+            error_message = str(e)
+        except Exception as e:
+            success = False
+            error_message = f"Erreur inattendue pendant la synchronisation : {e}"
+
+        duration_seconds = round(time.time() - t0, 1)
+        stats = {
+            "total_fetched": aggregated["total_fetched"],
+            "total_documents": aggregated["total_documents"],
+            "modified": aggregated["total_documents"],
+            "duration_seconds": duration_seconds,
+        }
+
+        await self._repo.record_sync_result(
+            session, connector_id, success=success, stats=stats, error=error_message,
+        )
+
+        return {"success": success, **stats, "error": error_message}
+
+    # ------------------------------------------------------------
+    # Utilitaire interne — récupère les credentials déchiffrés (pour
+    # test_connection / sync, PAS pour l'affichage API)
+    # ------------------------------------------------------------
+
+    async def get_decrypted_auth(
+        self, session: AsyncSession, connector_id: UUID
+    ) -> Optional[dict[str, str]]:
+        row = await self._repo.get_by_id(session, connector_id)
+        if row is None:
+            return None
+        return decrypt_auth_fields(row["auth_encrypted"])
+
+    # ------------------------------------------------------------
+    # Traduction ligne DB brute -> schéma API
+    # ------------------------------------------------------------
+
+    @staticmethod
+    def _compute_status(row: dict[str, Any]) -> str:
+        if not row["is_enabled"]:
+            return ConnectorStatus.PAUSED
+        if row["last_sync_status"] == "error":
+            return ConnectorStatus.ERROR
+        if row["last_sync_status"] == "success":
+            return ConnectorStatus.ACTIVE
+        return ConnectorStatus.PENDING
+
+    def _to_summary(self, row: dict[str, Any]) -> ConnectorSummary:
+        return ConnectorSummary(
+            id=row["id"],
+            source_type=row["source_type"],
+            instance_label=row["instance_label"],
+            status=self._compute_status(row),
+            last_sync_at=row["last_sync_at"],
+            sync_frequency_minutes=row["sync_frequency_minutes"],
+        )
+
+    def _to_detail(self, row: dict[str, Any]) -> ConnectorDetail:
+        auth_fields = decrypt_auth_fields(row["auth_encrypted"])
+        stats = SyncStats(**row["last_sync_stats"]) if row.get("last_sync_stats") else None
+
+        return ConnectorDetail(
+            id=row["id"],
+            source_type=row["source_type"],
+            instance_label=row["instance_label"],
+            status=self._compute_status(row),
+            last_sync_at=row["last_sync_at"],
+            last_sync_status=row["last_sync_status"],
+            last_sync_stats=stats,
+            last_error=row["last_error"],
+            sync_scope=row["sync_scope"] or {},
+            sync_frequency_minutes=row["sync_frequency_minutes"],
+            auth_fields=mask_auth_fields(auth_fields),
+        )

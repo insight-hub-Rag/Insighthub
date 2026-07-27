@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import router
+from app.admin.connectors.router import router as connectors_router
 from app.db.init_db import initialize_database_schema
 
 logging.basicConfig(
@@ -22,6 +23,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="InsightHub", version="0.1.0", lifespan=lifespan)
 
+
 # ── CORS ────────────────────────────────────────────────────────────────────
 # Autorise le frontend Next.js (port 3000 en dev ET en Docker)
 # à appeler l'API sans que le navigateur ne bloque la requête.
@@ -37,3 +39,4 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(connectors_router)
