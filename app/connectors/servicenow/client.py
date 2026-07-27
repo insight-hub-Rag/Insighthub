@@ -12,15 +12,22 @@ DEFAULT_FIELDS = (
 
 
 class ServiceNowClient:
-    """
-    Client HTTP bas niveau pour la Table API REST de ServiceNow
-    (/api/now/table/{table}). Ne fait aucune transformation.
-    Authentification Basic Auth (username/password).
-    """
+ 
 
-    def __init__(self):
-        self.base_url = settings.servicenow_instance_url.rstrip("/")
-        self.auth = (settings.servicenow_username, settings.servicenow_password)
+    def __init__(
+        self,
+        instance_url: Optional[str] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        page_size: Optional[int] = None,
+    ):
+        
+        self.base_url = (instance_url or settings.servicenow_instance_url).strip().rstrip("/")
+        self.auth = (
+            username or settings.servicenow_username,
+            password or settings.servicenow_password,
+        )
+        self.page_size = page_size or settings.servicenow_page_size
         self.headers = {"Accept": "application/json"}
 
     async def fetch_all_records(
@@ -31,7 +38,7 @@ class ServiceNowClient:
         Pagination par offset (sysparm_offset / sysparm_limit).
         """
         query = self._build_query(updated_after)
-        page_size = settings.servicenow_page_size
+        page_size = self.page_size
         offset = 0
         total_fetched = 0
 

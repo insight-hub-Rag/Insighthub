@@ -1,13 +1,4 @@
-"""
-Recherche SQL directe sur les métadonnées (JSONB) — cherche dans UN
-schéma à la fois, sans calcul de similarité. Utilisée quand le router
-(Rule Router ou LLM Router) a détecté un filtre exact plutôt qu'une
-question sémantique ouverte (ex: "tickets en cours", "priorité haute"),
-ou un identifiant natif explicite (ex: "IH-2").
 
-Score toujours à 1.0 : un filtre exact n'a pas de notion de "à quel
-point c'est pertinent" — soit ça matche, soit ça matche pas.
-"""
 
 import logging
 from typing import Optional
@@ -31,9 +22,9 @@ logger = logging.getLogger(__name__)
 # (ni app/connectors/servicenow/, ni schéma ingéré) — pas d'entrée ici
 # tant qu'il n'existe pas réellement.
 ALLOWED_FILTER_KEYS = {
-    "jira":       {"status", "priority", "assignee", "issue_type", "comment_author"},
-    "confluence": {"space_id", "status", "version"},
-    "sharepoint": {"list_title", "author", "editor", "file_ref"},
+    "jira":       {"status", "priority", "assignee", "issue_type", "comment_author", "connector_instance_id"},
+    "confluence": {"space_id", "status", "version", "connector_instance_id"},
+    "sharepoint": {"list_title", "author", "editor", "file_ref", "connector_instance_id"},
 }
 
 

@@ -30,10 +30,17 @@ def _ensure_all_sources_mentioned(answer: str, chunks: list[RetrievedChunk]) -> 
     "IH-1", pas une vérification sémantique complète — mais c'est un
     filet de sécurité, pas le mécanisme principal de qualité.
     """
-    missing = [
-        c for c in chunks
-        if c.document_id and c.document_id not in answer
-    ]
+    missing = []
+    seen_document_ids = set()
+    for c in chunks:
+        if not c.document_id or c.document_id in answer:
+            continue
+        if c.document_id in seen_document_ids:
+            # Même document déjà ajouté via un autre chunk (ex: 2
+            # passages du même document Confluence) — ne pas dupliquer.
+            continue
+        seen_document_ids.add(c.document_id)
+        missing.append(c)
     if not missing:
         return answer
 
@@ -44,6 +51,11 @@ def _ensure_all_sources_mentioned(answer: str, chunks: list[RetrievedChunk]) -> 
 
 
 def _source_label_for_completion(chunk: RetrievedChunk) -> str:
+    if chunk.title and chunk.title.startswith(f"[{chunk.document_id}]"):
+        # Le titre contient déjà l'ID en préfixe (ex: transformer Jira
+        # qui produit "[IH-1] API Gateway timeout...") — ne pas le
+        # répéter une deuxième fois.
+        return chunk.title
     if chunk.title:
         return f"[{chunk.document_id}] {chunk.title}"
     return f"[{chunk.document_id}]"
@@ -91,7 +103,23 @@ class Generator:
         question: str,
         chunks: list[RetrievedChunk],
         max_context_tokens: int = 2000,
+        filters_were_requested: bool = False,
     ) -> RAGResponse:
+        """
+        `filters_were_requested` : True si le routeur a extrait un
+        filtre exact (status, priority...) pour cette question — dans
+        ce cas, TOUT chunk qui arrive jusqu'ici a déjà passé le
+        filtrage strict (cf base_agent._matches_filters), donc en
+        omettre un dans le texte est un vrai oubli du modèle, à
+        compléter automatiquement (_ensure_all_sources_mentioned).
+
+        Si False (recherche sémantique ouverte, aucun filtre demandé),
+        le modèle peut légitimement choisir de ne mentionner qu'une
+        partie des chunks (ex: "lesquels sont urgents ?" sans filtre
+        explicite — le modèle raisonne lui-même sur le contenu) : dans
+        ce cas on NE complète PAS, pour ne pas rajouter des éléments
+        que le modèle a délibérément écartés à raison.
+        """
         if not chunks:
             return RAGResponse(
                 question=question,
@@ -122,18 +150,10 @@ class Generator:
         # seulement 3 mentionnés en prose). Plutôt que d'espérer une
         # énumération parfaite à chaque appel, on vérifie nous-mêmes et
         # on complète — jamais d'omission silencieuse côté utilisateur.
-        answer = _ensure_all_sources_mentioned(answer, context_chunks)
+        if filters_were_requested:
+            answer = _ensure_all_sources_mentioned(answer, context_chunks)
 
-        sources = [
-            {
-                "chunk_id": c.chunk_id,
-                "source_type": c.source_type,
-                "document_id": c.document_id,
-                "title": c.title,
-                "score": self._best_score(c),
-            }
-            for c in context_chunks
-        ]
+        sources = self._build_sources(context_chunks)
 
         return RAGResponse(
             question=question,
@@ -142,6 +162,46 @@ class Generator:
             model=model,
             total_chunks_searched=len(chunks),
         )
+
+    @staticmethod
+    def _build_sources(chunks: list[RetrievedChunk]) -> list[dict]:
+        """
+        Construit la liste `sources` de la réponse, avec un `score`
+        toujours interprétable comme un pourcentage (0 à 1, affiché
+        ensuite ×100 côté frontend).
+
+        Cas particulier : `rerank_score` (cross-encoder) est un logit
+        BRUT, non borné (souvent négatif, ex: -7.57 même pour le
+        meilleur résultat) — ce n'est PAS une probabilité. L'afficher
+        tel quel donnait des pourcentages absurdes ("-757%"). On le
+        normalise ici en min-max sur les chunks de CETTE réponse
+        (le moins bon des chunks affichés -> 0%, le meilleur -> 100%)
+        — un classement relatif honnête, pas une fausse précision
+        absolue que le score brut ne permet pas de toute façon.
+
+        Les autres types de score (sql_score, vector_score...) sont
+        déjà dans une échelle raisonnable, on les garde tels quels.
+        """
+        rerank_values = [c.rerank_score for c in chunks if c.rerank_score is not None]
+        rerank_min = min(rerank_values) if rerank_values else 0.0
+        rerank_max = max(rerank_values) if rerank_values else 1.0
+        rerank_span = (rerank_max - rerank_min) or 1.0  # évite une division par zéro
+
+        sources = []
+        for c in chunks:
+            if c.rerank_score is not None:
+                score = (c.rerank_score - rerank_min) / rerank_span
+            else:
+                score = Generator._best_score(c)
+
+            sources.append({
+                "chunk_id": c.chunk_id,
+                "source_type": c.source_type,
+                "document_id": c.document_id,
+                "title": c.title,
+                "score": round(score, 4),
+            })
+        return sources
 
     @staticmethod
     def _best_score(chunk: RetrievedChunk) -> float:

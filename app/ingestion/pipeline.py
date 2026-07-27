@@ -1,20 +1,4 @@
-"""
-IngestionPipeline : orchestre le flux complet d'ingestion pour N'IMPORTE
-QUELLE source, à condition qu'elle respecte BaseConnector / BaseTransformer.
 
-connector.fetch() -> transformer.transform() -> embedder.embed_chunks() -> store.upsert()
-
-Le pipeline ne connaît JAMAIS Jira, ServiceNow ou SharePoint directement —
-seulement les interfaces. Ajouter une nouvelle source ne nécessite donc
-aucune modification de cette classe (Open/Closed Principle). C'est la
-pièce qui matérialise le Strategy Pattern demandé pour ce sprint.
-
-Tout est injecté par constructeur (Dependency Injection) : connector,
-transformer, embedder et store sont des dépendances passées de l'extérieur,
-jamais instanciées en dur ici — ce qui rend le pipeline testable avec des
-faux objets (mocks) sans toucher au réseau, à un modèle d'embedding ou à
-une vraie base de données.
-"""
 
 from loguru import logger
 
@@ -33,11 +17,14 @@ class IngestionPipeline:
         transformer: BaseTransformer,
         embedder: Embedder,
         store: VectorStore,
+        connector_instance_id: str | None = None,
     ):
+      
         self._connector = connector
         self._transformer = transformer
         self._embedder = embedder
         self._store = store
+        self._connector_instance_id = connector_instance_id
 
     async def run(self, since: str | None = None) -> SyncResult:
         """
@@ -67,6 +54,10 @@ class IngestionPipeline:
                 chunks = self._transformer.transform(record)
                 if not chunks:
                     continue
+
+                if self._connector_instance_id:
+                    for chunk in chunks:
+                        chunk.metadata["connector_instance_id"] = self._connector_instance_id
 
                 self._embedder.embed_chunks(chunks)
                 await self._store.upsert_document_with_chunks(

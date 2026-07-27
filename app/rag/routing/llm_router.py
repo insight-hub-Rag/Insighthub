@@ -1,15 +1,4 @@
-"""
-LLM Router — utilisé pour TOUTE question qui n'est pas un identifiant
-explicite (le Rule Router ne gère plus que ce cas, cf rule_router.py).
-Envoie la question à un LLM (Groq ou AWS Bedrock, selon
-settings.use_bedrock — même bascule que Generator) qui retourne un
-JSON structuré : sources à interroger, type de recherche, filtres
-éventuels, score de confiance, et un jugement explicite de scope
-(in_scope).
 
-Contrairement au Rule Router, celui-ci comprend l'intention même mal
-formulée — au prix d'un appel réseau et d'une latence plus élevée.
-"""
 
 import json
 import logging
@@ -59,9 +48,14 @@ Règles :
        booléen resolved) → source "sql", surtout si la question
        demande un COMPTAGE, une AGRÉGATION ou un FILTRE numérique
        (ex: "combien de tickets non résolus", "tickets par priorité")
-  Règle pratique : si la question porte sur COMBIEN/COMPTER/AGRÉGER des
-  tickets → "sql". Si elle demande de LIRE/COMPRENDRE le contenu d'un
-  ticket précis (texte, description, commentaires) → "jira".
+  Règle pratique, à affiner : "combien de tickets" tout seul (pur
+  comptage, aucun adjectif qui qualifie un état/attribut) → "sql". Mais
+  "combien de tickets sont <adjectif>" (urgent, résolu, en retard,
+  assigné à quelqu'un...) n'est PAS un simple comptage : c'est une
+  demande de LISTE FILTRÉE sur le contenu réel des tickets → "jira",
+  même si le mot "combien" apparaît. Le mot-clé décisif n'est pas
+  "combien", c'est la présence d'un adjectif qualificatif juste après
+  "tickets sont"/"tickets qui sont".
 - "search_type" : "semantic" si question ouverte, "metadata" si filtre
   exact demandé, "hybrid" si les deux (pour "sql", cette valeur est
   ignorée par l'agent mais garde "hybrid" par défaut)
@@ -96,7 +90,10 @@ Q: "montre-moi les tickets urgents et leur description"
 {{"in_scope": true, "sources": ["jira"], "search_type": "hybrid", "filters": {{"priority": "Highest"}}, "confidence": 0.85, "reasoning": "Lecture du contenu de tickets Jira, pas un comptage"}}
 
 Q: "combien pèse une baleine bleue ?"
-{{"in_scope": false, "sources": [], "search_type": "hybrid", "filters": {{}}, "confidence": 0.95, "reasoning": "Question de culture générale, aucun lien avec les données d'entreprise"}}"""
+{{"in_scope": false, "sources": [], "search_type": "hybrid", "filters": {{}}, "confidence": 0.95, "reasoning": "Question de culture générale, aucun lien avec les données d'entreprise"}}
+
+Q: "combien de tickets sont urgents ?"
+{{"in_scope": true, "sources": ["jira"], "search_type": "hybrid", "filters": {{"priority": ["Highest", "High"]}}, "confidence": 0.85, "reasoning": "Malgré 'combien', ce n'est pas un pur comptage : 'sont urgents' qualifie un état à lire dans le contenu réel des tickets Jira"}}"""
 
 
 class LLMRouter:

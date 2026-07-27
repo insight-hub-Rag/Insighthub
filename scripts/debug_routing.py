@@ -1,10 +1,4 @@
-"""
-Script de diagnostic — appelle directement RuleRouter puis LLMRouter
-pour UNE question, sans passer par l'API ni l'orchestrateur, afin de
-voir exactement ce que chaque routeur décide isolément.
 
-Usage : docker compose exec backend python scripts/debug_routing.py
-"""
 
 import sys
 sys.path.insert(0, ".")

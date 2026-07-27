@@ -1,21 +1,4 @@
-"""
-Script d'évaluation du ROUTAGE — pas un test pytest, un script à lancer
-à la main pour mesurer la qualité réelle du Rule Router + LLM Router
-sur un jeu de questions diverses, avec de VRAIS appels à ton backend
-(Bedrock si USE_BEDROCK=true dans le .env, sinon Groq).
 
-Usage :
-    python scripts/eval_routing.py
-
-Pour chaque question : montre quel router a tranché (rule/llm), les
-sources choisies, in_scope, la confiance, et le raisonnement donné par
-le LLM. Compare à une attente ("expected") quand elle est raisonnable à
-fixer à l'avance, et calcule un score de précision global.
-
-Certains cas (colonne "expected" = None) sont volontairement laissés
-sans attente stricte — la bonne réponse dépend du jugement du LLM sur
-une formulation ambiguë, à toi de lire le "reasoning" et juger à l'oeil.
-"""
 
 import sys
 from dataclasses import dataclass
