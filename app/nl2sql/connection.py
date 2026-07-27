@@ -49,12 +49,23 @@ class TargetConnectionManager:
                 f"[TargetConnectionManager] Création engine pour "
                 f"connection_id='{config.connection_id}'"
             )
-            engine = create_engine(
-                config.database_url,
-                pool_pre_ping=True,   # évite les connexions mortes après idle
-                pool_size=5,
-                max_overflow=5,
-            )
+            if config.database_url.startswith("sqlite"):
+                import sqlite3
+                db_path = config.database_url.replace("sqlite:///", "")
+                if "?" in db_path:
+                    db_path = db_path.split("?")[0]
+                creator = lambda: sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+                engine = create_engine(
+                    "sqlite://",
+                    creator=creator
+                )
+            else:
+                engine = create_engine(
+                    config.database_url,
+                    pool_pre_ping=True,   # évite les connexions mortes après idle
+                    pool_size=5,
+                    max_overflow=5,
+                )
             self._engines[config.connection_id] = engine
             self._session_factories[config.connection_id] = sessionmaker(
                 bind=engine, expire_on_commit=False

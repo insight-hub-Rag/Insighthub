@@ -3,7 +3,14 @@ import time
 import traceback
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
+import uuid
+from pathlib import Path
+from sqlalchemy import create_engine
+from config import settings
+from app.nl2sql import factory
+from app.nl2sql.schema_scanner import SchemaScanner
+from app.nl2sql.connection import target_connection_manager
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -172,6 +179,103 @@ async def search(request: SearchRequest) -> dict:
 # ==================================================================
 # NL2SQL — administration et monitoring
 # ==================================================================
+
+def update_env_variable(key: str, value: str):
+    env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+    if not env_path.exists():
+        return
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+        updated = False
+        new_lines = []
+        for line in lines:
+            if line.strip().startswith(f"{key}="):
+                new_lines.append(f"{key}={value}")
+                updated = True
+            else:
+                new_lines.append(line)
+        if not updated:
+            new_lines.append(f"{key}={value}")
+        env_path.write_text("\n".join(new_lines), encoding="utf-8")
+    except Exception as e:
+        logger.error(f"Failed to update .env file: {e}")
+
+
+@router.post("/nl2sql/upload-sqlite", summary="Charge un fichier SQLite de façon sécurisée et l'analyse")
+async def upload_sqlite_database(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    if not file.filename.endswith(".sqlite"):
+        raise HTTPException(status_code=400, detail="Seuls les fichiers .sqlite sont autorisés.")
+    
+    # Check file size (max 20MB)
+    MAX_FILE_SIZE = 20 * 1024 * 1024
+    contents = await file.read()
+    if len(contents) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="Le fichier est trop volumineux (max 20 Mo).")
+    
+    # Check SQLite signature
+    if not contents.startswith(b"SQLite format 3\x00"):
+        raise HTTPException(status_code=400, detail="Fichier SQLite invalide ou corrompu.")
+    
+    # Create folder if it doesn't exist
+    sqlite_dir = Path(__file__).resolve().parent.parent.parent / "sqlite_databases"
+    sqlite_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Secure filename to prevent path traversal
+    safe_filename = f"sqlite_{uuid.uuid4().hex}.sqlite"
+    filepath = sqlite_dir / safe_filename
+    
+    # Save to disk
+    with open(filepath, "wb") as f:
+        f.write(contents)
+        
+    # Scan the schema
+    db_url = f"sqlite:///{filepath.resolve().as_posix()}"
+    
+    try:
+        import sqlite3
+        creator = lambda: sqlite3.connect(f"file:{filepath.resolve().as_posix()}?mode=ro", uri=True)
+        temp_engine = create_engine("sqlite://", creator=creator)
+        scanner = SchemaScanner()
+        schema_scan = scanner.scan(temp_engine, connection_id="default")
+        temp_engine.dispose()
+    except Exception as exc:
+        if filepath.exists():
+            filepath.unlink()
+        logger.error(f"Failed to scan SQLite schema: {exc}")
+        raise HTTPException(status_code=400, detail=f"Impossible de lire le schéma SQLite : {str(exc)}")
+        
+    # Activate this database for the application
+    settings.nl2sql_target_db_url = db_url
+    update_env_variable("NL2SQL_TARGET_DB_URL", db_url)
+    
+    # Invalidate current agent instance and cache
+    factory._agent_instance = None
+    target_connection_manager.dispose("default")
+    
+    # Invalidate schema cache & save the new schema in store/cache
+    agent = build_nl2sql_agent()
+    await agent._schema_cache.invalidate("default")
+    await agent._schema_cache.refresh(db, schema_scan)
+    
+    return {
+        "status": "ok",
+        "connection_id": "default",
+        "engine_dialect": "sqlite",
+        "database_name": file.filename,
+        "tables": [
+            {
+                "id": f"{t.name}-{uuid.uuid4().hex[:6]}",
+                "name": t.name,
+                "columns": [c.name for c in t.columns],
+                "accessible": True,
+            }
+            for t in schema_scan.tables
+        ]
+    }
+
 
 @router.post("/nl2sql/rescan-schema", summary="Force un re-scan du schéma cible")
 async def rescan_nl2sql_schema() -> dict:
