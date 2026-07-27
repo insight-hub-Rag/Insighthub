@@ -3,7 +3,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.connectors.models import (
@@ -11,6 +11,7 @@ from app.admin.connectors.models import (
     ConnectorDetail,
     ConnectorSummary,
     ConnectorUpdate,
+    ChatHistoryItem,
 )
 from app.admin.connectors.repository import DuplicateInstanceLabelError
 from app.admin.connectors.service import ConnectorService
@@ -22,7 +23,8 @@ router = APIRouter(prefix="/connectors", tags=["connectors"])
 
 
 class ScopedChatRequest(BaseModel):
-    question: str
+    question: str = Field(min_length=1, max_length=4000)
+    history: list[ChatHistoryItem] = Field(default_factory=list, max_length=6)
 
 
 def get_service() -> ConnectorService:
@@ -168,10 +170,14 @@ async def test_chat(
         question=payload.question,
         forced_sources=[connector.source_type],
         forced_instance_id=str(connector_id),
+        conversation_history=[
+            item.model_dump() for item in payload.history
+        ],
     )
 
     return {
-        "question": response.question,
+        "question": payload.question,
+        "standalone_question": response.question,
         "answer": response.answer,
         "model": response.model,
         "sources": response.sources,
