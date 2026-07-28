@@ -334,11 +334,19 @@ class ConnectorService:
         from app.nl2sql.connection import target_connection_manager
         from config import settings
 
+        from app.admin.connectors.dump_parser import DumpParseError, DumpParser
+
         sandbox_mgr = SandboxManager()
         scanner = SchemaScanner()
         
         # Handle SQLite raw database file vs SQL text dump
         is_sqlite_binary = file_bytes.startswith(b"SQLite format 3\x00")
+        is_postgres_binary = file_bytes.startswith(b"PGDMP")
+
+        if is_postgres_binary:
+            raise DumpParseError(
+                "Le fichier fourni est un dump binaire PostgreSQL (PGDMP). Veuillez exporter votre base au format SQL texte (Plain text) avant de l'importer."
+            )
         
         if is_sqlite_binary:
             sqlite_dir = Path(__file__).resolve().parent.parent.parent.parent / "sqlite_databases"
@@ -378,6 +386,14 @@ class ConnectorService:
 
         # Text dump processing (PostgreSQL, MySQL, Oracle, SQL Server, or SQLite text dump)
         sql_text = file_bytes.decode("utf-8", errors="ignore")
+        
+        # Auto-detect engine from DDL content if possible
+        parser_instance = DumpParser()
+        detected_engine = parser_instance.detect_engine(sql_text)
+        if detected_engine:
+            logger.info(f"[process_dump_upload] Auto-detected engine: {detected_engine} (requested: {engine_type})")
+            engine_type = detected_engine
+
         with sandbox_mgr.create_sandbox(engine_type, sql_text, tenant_id=tenant_id) as sandbox_engine:
             schema_scan = scanner.scan(sandbox_engine, connection_id=tenant_id)
             

@@ -194,6 +194,7 @@ class DumpParser:
             "/*!40101",
             "USE ",
             "SELECT PG_CATALOG.",
+            "SELECT SETVAL",
         ]
         for prefix in ignored_prefixes:
             if stmt_upper.startswith(prefix):
