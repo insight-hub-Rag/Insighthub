@@ -25,6 +25,8 @@ from app.admin.connectors.models import (
     ConnectorStatus,
     ConnectorSummary,
     ConnectorUpdate,
+    DumpTableSummary,
+    DumpUploadResponse,
     SyncStats,
 )
 from app.admin.connectors.repository import ConnectorRepository
@@ -309,3 +311,108 @@ class ConnectorService:
             sync_frequency_minutes=row["sync_frequency_minutes"],
             auth_fields=mask_auth_fields(auth_fields),
         )
+
+    # ------------------------------------------------------------
+    # Ingestion & Materialisation des Dumps SQL (Multi-moteur Sandbox)
+    # ------------------------------------------------------------
+
+    async def process_dump_upload(
+        self,
+        session: AsyncSession,
+        file_name: str,
+        file_bytes: bytes,
+        engine_type: str = "sqlite",
+        tenant_id: str = "default",
+    ) -> DumpUploadResponse:
+        import uuid
+        import sqlite3
+        from pathlib import Path
+        from sqlalchemy import create_engine
+        from app.admin.connectors.sandbox_manager import SandboxManager
+        from app.nl2sql.schema_scanner import SchemaScanner
+        from app.nl2sql.factory import build_nl2sql_agent
+        from app.nl2sql.connection import target_connection_manager
+        from config import settings
+
+        from app.admin.connectors.dump_parser import DumpParseError, DumpParser
+
+        sandbox_mgr = SandboxManager()
+        scanner = SchemaScanner()
+        
+        # Handle SQLite raw database file vs SQL text dump
+        is_sqlite_binary = file_bytes.startswith(b"SQLite format 3\x00")
+        is_postgres_binary = file_bytes.startswith(b"PGDMP")
+
+        if is_postgres_binary:
+            raise DumpParseError(
+                "Le fichier fourni est un dump binaire PostgreSQL (PGDMP). Veuillez exporter votre base au format SQL texte (Plain text) avant de l'importer."
+            )
+        
+        if is_sqlite_binary:
+            sqlite_dir = Path(__file__).resolve().parent.parent.parent.parent / "sqlite_databases"
+            sqlite_dir.mkdir(parents=True, exist_ok=True)
+            safe_filename = f"sqlite_{uuid.uuid4().hex[:8]}.sqlite"
+            filepath = sqlite_dir / safe_filename
+            filepath.write_bytes(file_bytes)
+            
+            creator = lambda: sqlite3.connect(f"file:{filepath.resolve().as_posix()}?mode=ro", uri=True)
+            temp_engine = create_engine("sqlite://", creator=creator)
+            schema_scan = scanner.scan(temp_engine, connection_id=tenant_id)
+            temp_engine.dispose()
+            
+            db_url = f"sqlite:///{filepath.resolve().as_posix()}"
+            settings.nl2sql_target_db_url = db_url
+            target_connection_manager.dispose(tenant_id)
+            
+            agent = build_nl2sql_agent()
+            await agent._schema_cache.invalidate(tenant_id)
+            await agent._schema_cache.refresh(session, schema_scan)
+            
+            return DumpUploadResponse(
+                status="ok",
+                connection_id=tenant_id,
+                engine_dialect="sqlite",
+                database_name=file_name,
+                tables=[
+                    DumpTableSummary(
+                        id=f"{t.name}-{uuid.uuid4().hex[:6]}",
+                        name=t.name,
+                        columns=[c.name for c in t.columns],
+                        accessible=True,
+                    )
+                    for t in schema_scan.tables
+                ]
+            )
+
+        # Text dump processing (PostgreSQL, MySQL, Oracle, SQL Server, or SQLite text dump)
+        sql_text = file_bytes.decode("utf-8", errors="ignore")
+        
+        # Auto-detect engine from DDL content if possible
+        parser_instance = DumpParser()
+        detected_engine = parser_instance.detect_engine(sql_text)
+        if detected_engine:
+            logger.info(f"[process_dump_upload] Auto-detected engine: {detected_engine} (requested: {engine_type})")
+            engine_type = detected_engine
+
+        with sandbox_mgr.create_sandbox(engine_type, sql_text, tenant_id=tenant_id) as sandbox_engine:
+            schema_scan = scanner.scan(sandbox_engine, connection_id=tenant_id)
+            
+            agent = build_nl2sql_agent()
+            await agent._schema_cache.invalidate(tenant_id)
+            await agent._schema_cache.refresh(session, schema_scan)
+
+        return DumpUploadResponse(
+            status="ok",
+            connection_id=tenant_id,
+            engine_dialect=engine_type.lower(),
+            database_name=file_name,
+            tables=[
+                DumpTableSummary(
+                    id=f"{t.name}-{uuid.uuid4().hex[:6]}",
+                    name=t.name,
+                    columns=[c.name for c in t.columns],
+                    accessible=True,
+                )
+                for t in schema_scan.tables
+            ]
+        )

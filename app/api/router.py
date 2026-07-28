@@ -3,7 +3,7 @@ import time
 import traceback
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form
 import uuid
 from pathlib import Path
 from sqlalchemy import create_engine
@@ -201,23 +201,63 @@ def update_env_variable(key: str, value: str):
         logger.error(f"Failed to update .env file: {e}")
 
 
+@router.post("/nl2sql/upload-dump", summary="Upload et matérialisation d'un dump SQL (Multi-moteur: Postgres, MySQL, Oracle, SQL Server, SQLite)")
+async def upload_sql_dump(
+    file: UploadFile = File(...),
+    engine_type: str = Form("sqlite"),
+    tenant_id: str = Form("default"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    from app.admin.connectors.service import ConnectorService
+    
+    ALLOWED_EXTENSIONS = {".sql", ".sqlite", ".sqlite3", ".db", ".db3", ".s3db", ".sl3", ".txt", ".dump"}
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        allowed_str = ", ".join(sorted(ALLOWED_EXTENSIONS))
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Extension de fichier non autorisée. Extensions autorisées : ({allowed_str})"
+        )
+
+    MAX_FILE_SIZE = 50 * 1024 * 1024
+    contents = await file.read()
+    if len(contents) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="Le fichier est trop volumineux (max 50 Mo).")
+
+    service = ConnectorService()
+    try:
+        res = await service.process_dump_upload(
+            session=db,
+            file_name=file.filename or "dump.sql",
+            file_bytes=contents,
+            engine_type=engine_type,
+            tenant_id=tenant_id,
+        )
+        return res.model_dump()
+    except Exception as exc:
+        logger.error(f"Failed to process dump upload: {exc}")
+        raise HTTPException(status_code=400, detail=f"Erreur lors du traitement du dump : {str(exc)}")
+
+
 @router.post("/nl2sql/upload-sqlite", summary="Charge un fichier SQLite de façon sécurisée et l'analyse")
 async def upload_sqlite_database(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    if not file.filename.endswith(".sqlite"):
-        raise HTTPException(status_code=400, detail="Seuls les fichiers .sqlite sont autorisés.")
+    ALLOWED_SQLITE_EXTENSIONS = {".sqlite", ".sqlite3", ".db", ".db3", ".s3db", ".sl3", ".sql"}
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in ALLOWED_SQLITE_EXTENSIONS:
+        allowed_str = ", ".join(sorted(ALLOWED_SQLITE_EXTENSIONS))
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Extension de fichier non autorisée. Seuls les fichiers ({allowed_str}) sont autorisés."
+        )
     
     # Check file size (max 20MB)
     MAX_FILE_SIZE = 20 * 1024 * 1024
     contents = await file.read()
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="Le fichier est trop volumineux (max 20 Mo).")
-    
-    # Check SQLite signature
-    if not contents.startswith(b"SQLite format 3\x00"):
-        raise HTTPException(status_code=400, detail="Fichier SQLite invalide ou corrompu.")
     
     # Create folder if it doesn't exist
     sqlite_dir = Path(__file__).resolve().parent.parent.parent / "sqlite_databases"
@@ -227,9 +267,27 @@ async def upload_sqlite_database(
     safe_filename = f"sqlite_{uuid.uuid4().hex}.sqlite"
     filepath = sqlite_dir / safe_filename
     
-    # Save to disk
-    with open(filepath, "wb") as f:
-        f.write(contents)
+    if ext == ".sql":
+        try:
+            sql_text = contents.decode("utf-8", errors="ignore")
+            import sqlite3
+            conn = sqlite3.connect(filepath)
+            cursor = conn.cursor()
+            cursor.executescript(sql_text)
+            conn.commit()
+            conn.close()
+        except Exception as err:
+            if filepath.exists():
+                filepath.unlink()
+            raise HTTPException(status_code=400, detail=f"Erreur lors de la lecture du script SQL : {str(err)}")
+    else:
+        # Check SQLite signature
+        if not contents.startswith(b"SQLite format 3\x00"):
+            raise HTTPException(status_code=400, detail="Fichier SQLite invalide ou corrompu.")
+        
+        # Save to disk
+        with open(filepath, "wb") as f:
+            f.write(contents)
         
     # Scan the schema
     db_url = f"sqlite:///{filepath.resolve().as_posix()}"

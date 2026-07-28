@@ -13,6 +13,8 @@ sys.modules["office365.sharepoint.client_context"] = MagicMock()
 sys.modules["sentence_transformers"] = MagicMock()
 sys.modules["pgvector"] = MagicMock()
 sys.modules["pgvector.psycopg2"] = MagicMock()
+sys.modules["cryptography"] = MagicMock()
+sys.modules["cryptography.fernet"] = MagicMock()
 
 import os
 import sqlite3
@@ -104,6 +106,19 @@ class TestSqliteUpload(unittest.TestCase):
             self.assertIn("username", users_table["columns"])
             self.assertIn("id", users_table["columns"])
 
+    def test_upload_sqlite_db_extension_success(self):
+        with TestClient(app) as client:
+            with open(self.db_file, "rb") as f:
+                response = client.post(
+                    "/nl2sql/upload-sqlite",
+                    files={"file": ("my_database.db", f, "application/octet-stream")}
+                )
+                
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertEqual(data["status"], "ok")
+            self.assertEqual(data["database_name"], "my_database.db")
+
     def test_upload_sqlite_invalid_extension(self):
         with TestClient(app) as client:
             # Send a text file disguised as sqlite
@@ -112,18 +127,18 @@ class TestSqliteUpload(unittest.TestCase):
                 files={"file": ("test_schema.txt", b"some data", "text/plain")}
             )
             self.assertEqual(response.status_code, 400)
-            self.assertIn("Seuls les fichiers .sqlite", response.json()["detail"])
+            self.assertIn("Extension de fichier non autorisée", response.json()["detail"])
 
     def test_upload_sqlite_invalid_signature(self):
         # Create file with correct extension but invalid sqlite header
-        bad_file = Path(self.temp_dir) / "bad.sqlite"
+        bad_file = Path(self.temp_dir) / "bad.db"
         bad_file.write_bytes(b"Not an sqlite database format!")
         
         with TestClient(app) as client:
             with open(bad_file, "rb") as f:
                 response = client.post(
                     "/nl2sql/upload-sqlite",
-                    files={"file": ("bad.sqlite", f, "application/octet-stream")}
+                    files={"file": ("bad.db", f, "application/octet-stream")}
                 )
             self.assertEqual(response.status_code, 400)
             self.assertIn("Fichier SQLite invalide", response.json()["detail"])

@@ -1,5 +1,3 @@
-
-
 from datetime import datetime
 from enum import IntEnum
 from typing import Any, Literal, Optional
@@ -16,6 +14,11 @@ class SourceType(str):
     CONFLUENCE = "confluence"
     SHAREPOINT = "sharepoint"
     SERVICENOW = "servicenow"
+    POSTGRESQL = "postgresql"
+    MYSQL = "mysql"
+    ORACLE = "oracle"
+    MSSQL = "mssql"
+    SQLITE = "sqlite"
 
 
 class SyncFrequency(IntEnum):
@@ -71,7 +74,7 @@ class ConnectorDetail(BaseModel):
     last_error: Optional[str] = None
     sync_scope: dict[str, Any] = Field(default_factory=dict)
     sync_frequency_minutes: int
-    auth_fields: dict[str, str] = Field(default_factory=dict)  # ex: {"url": "https://acme.atlassian.net", "email": "...", "token": "••••••••••••"}
+    auth_fields: dict[str, str] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------
@@ -81,7 +84,7 @@ class ConnectorDetail(BaseModel):
 class ConnectorCreate(BaseModel):
     source_type: str
     instance_label: str
-    auth_fields: dict[str, str]     # ex: {"url": "...", "email": "...", "token": "..."} — en clair, jamais loggé
+    auth_fields: dict[str, str]
     sync_scope: dict[str, Any] = Field(default_factory=dict)
     sync_frequency_minutes: SyncFrequency = SyncFrequency.FIFTEEN_MIN
 
@@ -96,12 +99,11 @@ class ConnectorUpdate(BaseModel):
 
 
 class ConnectorCatalogItem(BaseModel):
-    """Pour la modale 'Ajouter une source' (les 4 vignettes Jira /
-    ServiceNow / SharePoint / Confluence)."""
+    """Pour la modale 'Ajouter une source'."""
     source_type: str
     display_name: str
     description: str
-    required_auth_fields: list[str]  # ex: ["url", "email", "token"]
+    required_auth_fields: list[str]
 
 
 class ChatHistoryItem(BaseModel):
@@ -109,3 +111,18 @@ class ChatHistoryItem(BaseModel):
 
     role: Literal["user", "assistant"]
     content: str = Field(min_length=1, max_length=4000)
+
+
+class DumpTableSummary(BaseModel):
+    id: str
+    name: str
+    columns: list[str]
+    accessible: bool = True
+
+
+class DumpUploadResponse(BaseModel):
+    status: str
+    connection_id: str
+    engine_dialect: str
+    database_name: str
+    tables: list[DumpTableSummary]
