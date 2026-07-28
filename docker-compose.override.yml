@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  # ─── Sandbox Conteneur MySQL ──────────────────────────────────────────────
+  sandbox-mysql:
+    image: mysql:8.0
+    container_name: insighthub-sandbox-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: sandbox_db
+    ports:
+      - "3306:3306"
+    networks:
+      - insighthub-net
+
+  # ─── Sandbox Conteneur SQL Server (MSSQL) ───────────────────────────────
+  sandbox-mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: insighthub-sandbox-mssql
+    restart: unless-stopped
+    environment:
+      SA_PASSWORD: ${MSSQL_SA_PASSWORD:-Password123!}
+      ACCEPT_EULA: "Y"
+    ports:
+      - "1433:1433"
+    networks:
+      - insighthub-net
