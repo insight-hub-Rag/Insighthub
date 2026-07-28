@@ -84,6 +84,7 @@ jobs:
           --ignore=tests/test_servicenow_client_http.py
           --ignore=tests/test_servicenow_pipeline.py
           --ignore=tests/test_sqlite_upload.py
+          --ignore=tests/test_dump_upload_pipeline.py
 
       # Ces tests lancent leur propre serveur Uvicorn et doivent rester dans
       # une session asyncio distincte du moteur asyncpg des tests principaux.
@@ -100,3 +101,10 @@ jobs:
           pytest -q --tb=short tests/test_sqlite_upload.py::TestSqliteUpload::test_upload_sqlite_invalid_extension
           pytest -q --tb=short tests/test_sqlite_upload.py::TestSqliteUpload::test_upload_sqlite_invalid_signature
           pytest -q --tb=short tests/test_sqlite_upload.py::TestSqliteUpload::test_upload_sqlite_success
+
+      # Même isolation pour les imports de dumps, qui utilisent TestClient.
+      - name: Run dump upload pipeline tests
+        run: |
+          pytest -q --tb=short tests/test_dump_upload_pipeline.py::TestDumpUploadPipeline::test_upload_invalid_extension
+          pytest -q --tb=short tests/test_dump_upload_pipeline.py::TestDumpUploadPipeline::test_upload_mysql_dump_success
+          pytest -q --tb=short tests/test_dump_upload_pipeline.py::TestDumpUploadPipeline::test_upload_postgres_dump_success
