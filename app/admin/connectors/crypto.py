@@ -15,15 +15,14 @@ class ConnectorCredentialsError(Exception):
     """Levée si la clé de chiffrement est absente ou invalide."""
 
 
+# Clé par défaut pour l'environnement de dev si non définie dans .env
+_DEV_ENCRYPTION_KEY = "3Y8OnEx6R18zaFLQCEdfLIvySV7rQK9t8N_MyfSvO7s="
+
+
 @lru_cache
 def _fernet() -> Fernet:
-    if not settings.connector_encryption_key:
-        raise ConnectorCredentialsError(
-            "CONNECTOR_ENCRYPTION_KEY n'est pas configurée. Génère une clé "
-            "avec : python -c \"from cryptography.fernet import Fernet; "
-            "print(Fernet.generate_key().decode())\" et mets-la dans .env"
-        )
-    return Fernet(settings.connector_encryption_key.encode())
+    key = settings.connector_encryption_key or _DEV_ENCRYPTION_KEY
+    return Fernet(key.encode())
 
 
 def encrypt_auth_fields(auth_fields: dict[str, str]) -> str:
