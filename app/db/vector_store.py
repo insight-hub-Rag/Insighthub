@@ -23,6 +23,7 @@ SCHEMA_BY_SOURCE = {
     "servicenow": "servicenow",
     "sharepoint": "sharepoint",
     "confluence": "confluence",
+    "documents": "documents",   # Documents Clients (PDF, DOCX, TXT, CSV, PPTX)
 }
 
 

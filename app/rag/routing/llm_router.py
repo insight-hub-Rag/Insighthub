@@ -9,7 +9,7 @@ from app.core.models import PreprocessedQuery, RoutingDecision
 logger = logging.getLogger(__name__)
 
 # Sources réellement disponibles dans ce projet.
-AVAILABLE_SOURCES = ["jira", "confluence", "sharepoint", "sql"]
+AVAILABLE_SOURCES = ["jira", "confluence", "sharepoint", "sql", "documents"]
 
 SYSTEM_PROMPT = f"""Tu es un routeur pour un assistant RAG d'entreprise.
 Analyse la question et retourne UNIQUEMENT un JSON valide (rien d'autre,
@@ -27,7 +27,7 @@ pas de texte avant/après, pas de markdown) avec ce format exact :
 Règles :
 - "in_scope" : false si la question ne concerne clairement AUCUNE
   donnée d'entreprise (Jira, Confluence, SharePoint, ServiceNow, RH,
-  business) — par ex. culture générale, salutations, questions
+  documents téléversés, business) — par ex. culture générale, salutations, questions
   personnelles, code générique sans lien avec l'entreprise. true sinon.
   Un mot-clé quantitatif isolé ("combien", "total", "moyenne"...) ne
   suffit PAS à rendre une question "in_scope" : "combien pèse une
@@ -35,7 +35,10 @@ Règles :
   Si "in_scope" est false, "sources" doit être une liste vide et les
   autres champs de recherche n'ont pas d'importance.
 - "sources" : choisis uniquement les sources pertinentes, jamais vide
-  SI "in_scope" est true
+  SI "in_scope" est true.
+- "documents" : choisis cette source pour toute question portant sur des
+  documents téléversés/fichiers importés par l'utilisateur (PDF, DOCX, TXT,
+  CSV, PPTX, règlements, contrats, guides, comptes-rendus, notes internes).
 - "sql" : choisis cette source pour toute question portant sur des
   données structurées/chiffrées de l'entreprise (comptages, moyennes,
   agrégations, RH, projets, tickets en base de données) — PAS pour des

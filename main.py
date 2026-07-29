@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import router
 from app.admin.connectors.router import router as connectors_router
+from app.documents.router import router as documents_router
 from app.db.init_db import initialize_database_schema
 
 logging.basicConfig(
@@ -41,3 +42,4 @@ app.add_middleware(
 
 app.include_router(router)
 app.include_router(connectors_router)
+app.include_router(documents_router)

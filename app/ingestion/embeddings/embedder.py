@@ -42,34 +42,57 @@ class LocalEmbeddingBackend:
 class BedrockEmbeddingBackend:
     def __init__(self):
         import boto3
-        self._client = boto3.client(
-            "bedrock-runtime",
-            region_name = settings.aws_region,
-        )
-        self._model_id = "amazon.titan-embed-text-v2:0"
+        kwargs = {"region_name": settings.aws_region}
+        if settings.aws_access_key_id and settings.aws_secret_access_key:
+            kwargs["aws_access_key_id"] = settings.aws_access_key_id
+            kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
+        self._client = boto3.client("bedrock-runtime", **kwargs)
+        self._model_id = settings.bedrock_embedding_model or "amazon.titan-embed-text-v2:0"
+        self._fallback_local: Optional[LocalEmbeddingBackend] = None
         logger.info(f"[Embedder] Bedrock Titan Embed v2 | region={settings.aws_region}")
+
     def encode(self, texts: list[str]) -> list[list[float]]:
         vectors = []
-        for text in texts:
-            body = json.dumps({
-                "inputText":  text[:8000],
-                "dimensions": 1024,
-                "normalize":  True,
-            })
-            resp   = self._client.invoke_model(
-                modelId     = self._model_id,
-                body        = body,
-                contentType = "application/json",
-                accept      = "application/json",
-            )
-            result = json.loads(resp["body"].read())
-            vectors.append(result["embedding"])
-        return vectors
+        try:
+            for text in texts:
+                body = json.dumps({
+                    "inputText": text[:8000],
+                    "dimensions": settings.embedding_dimension,
+                    "normalize": True,
+                })
+                resp = self._client.invoke_model(
+                    modelId=self._model_id,
+                    body=body,
+                    contentType="application/json",
+                    accept="application/json",
+                )
+                result = json.loads(resp["body"].read())
+                vectors.append(result["embedding"])
+            return vectors
+        except Exception as e:
+            logger.warning(f"[Embedder] Bedrock échoué ({e}) → Basculement vers le modèle local")
+            if self._fallback_local is None:
+                self._fallback_local = LocalEmbeddingBackend(model_name=settings.embedding_model)
+            raw_vectors = self._fallback_local.encode(texts)
+            # S'assurer de la dimension 1024 pour pgvector
+            target_dim = settings.embedding_dimension
+            padded = []
+            for v in raw_vectors:
+                if len(v) < target_dim:
+                    v = v + [0.0] * (target_dim - len(v))
+                elif len(v) > target_dim:
+                    v = v[:target_dim]
+                padded.append(v)
+            return padded
 
 
 def _build_backend() -> EmbeddingBackend:
     if settings.embedding_provider == "bedrock":
-        return BedrockEmbeddingBackend()
+        try:
+            return BedrockEmbeddingBackend()
+        except Exception as e:
+            logger.warning(f"[Embedder] Erreur init Bedrock ({e}) → Modèle local")
+            return LocalEmbeddingBackend(model_name=settings.embedding_model)
     logger.info("[Embedder] Fallback local")
     return LocalEmbeddingBackend(model_name=settings.embedding_model)
 

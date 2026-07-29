@@ -26,6 +26,7 @@ from app.rag.agents.jira_agent import JiraAgent
 from app.rag.agents.confluence_agent import ConfluenceAgent
 from app.rag.agents.sharepoint_agent import SharePointAgent
 from app.rag.agents.servicenow_agent import ServiceNowAgent
+from app.rag.agents.documents_agent import DocumentsAgent
 from app.nl2sql.factory import build_nl2sql_agent
 
 logger = logging.getLogger(__name__)
@@ -35,13 +36,14 @@ _AGENT_CLASSES: dict[str, type[BaseAgent]] = {
     "confluence": ConfluenceAgent,
     "sharepoint": SharePointAgent,
     "servicenow": ServiceNowAgent,
+    "documents": DocumentsAgent,
     # "sql" volontairement absent d'ici — voir get(), construit via factory.
 }
 
 # Sources réellement interrogeables aujourd'hui — à jour avec ce qui est
 # ingéré. ServiceNow reste déclaré dans _AGENT_CLASSES (pour être prêt)
 # mais absent d'ACTIVE_SOURCES tant qu'il n'y a pas de données.
-ACTIVE_SOURCES = {"jira", "confluence", "sharepoint", "sql"}
+ACTIVE_SOURCES = {"jira", "confluence", "sharepoint", "sql", "documents"}
 
 
 class AgentRegistry:

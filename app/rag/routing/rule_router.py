@@ -67,6 +67,10 @@ SOURCE_NAME_KEYWORDS = {
     "jira": "jira",
     "confluence": "confluence",
     "sharepoint": "sharepoint",
+    "document": "documents",
+    "documents": "documents",
+    "fichier": "documents",
+    "fichiers": "documents",
 }
 
 # --- Cas 4 : noms de domaine métier forts -------------------------------

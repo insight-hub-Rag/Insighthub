@@ -169,3 +169,103 @@ ALTER TABLE servicenow.embeddings
 
 CREATE INDEX IF NOT EXISTS idx_servicenow_embeddings_tsv
     ON servicenow.embeddings USING gin (content_tsv);
+
+-- ------------------------------------------------------------
+-- SCHÉMA SHAREPOINT
+-- ------------------------------------------------------------
+CREATE SCHEMA IF NOT EXISTS sharepoint;
+
+CREATE TABLE IF NOT EXISTS sharepoint.documents (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    external_id TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (external_id)
+);
+
+CREATE TABLE IF NOT EXISTS sharepoint.embeddings (
+    chunk_id    TEXT PRIMARY KEY,
+    document_id UUID NOT NULL REFERENCES sharepoint.documents(id) ON DELETE CASCADE,
+    content     TEXT NOT NULL,
+    embedding   vector(1024) NOT NULL,
+    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_sharepoint_documents_external_id
+    ON sharepoint.documents (external_id);
+
+CREATE INDEX IF NOT EXISTS idx_sharepoint_embeddings_document_id
+    ON sharepoint.embeddings (document_id);
+
+CREATE INDEX IF NOT EXISTS idx_sharepoint_embeddings_vector
+    ON sharepoint.embeddings USING hnsw (embedding vector_cosine_ops);
+
+ALTER TABLE sharepoint.embeddings
+    ADD COLUMN IF NOT EXISTS content_tsv tsvector
+    GENERATED ALWAYS AS (to_tsvector('french', content)) STORED;
+
+CREATE INDEX IF NOT EXISTS idx_sharepoint_embeddings_tsv
+    ON sharepoint.embeddings USING gin (content_tsv);
+
+-- ------------------------------------------------------------
+-- SCHÉMA DOCUMENTS CLIENTS (PDF, DOCX, TXT, CSV, PPTX)
+-- ------------------------------------------------------------
+CREATE SCHEMA IF NOT EXISTS documents;
+
+CREATE TABLE IF NOT EXISTS documents.documents (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    external_id TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (external_id)
+);
+
+CREATE TABLE IF NOT EXISTS documents.embeddings (
+    chunk_id    TEXT PRIMARY KEY,
+    document_id UUID NOT NULL REFERENCES documents.documents(id) ON DELETE CASCADE,
+    content     TEXT NOT NULL,
+    embedding   vector(1024) NOT NULL,
+    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_documents_documents_external_id
+    ON documents.documents (external_id);
+
+CREATE INDEX IF NOT EXISTS idx_documents_embeddings_document_id
+    ON documents.embeddings (document_id);
+
+CREATE INDEX IF NOT EXISTS idx_documents_embeddings_vector
+    ON documents.embeddings USING hnsw (embedding vector_cosine_ops);
+
+ALTER TABLE documents.embeddings
+    ADD COLUMN IF NOT EXISTS content_tsv tsvector
+    GENERATED ALWAYS AS (to_tsvector('french', content)) STORED;
+
+CREATE INDEX IF NOT EXISTS idx_documents_embeddings_tsv
+    ON documents.embeddings USING gin (content_tsv);
+
+-- Table de suivi des documents clients uploadés (métadonnées application)
+CREATE TABLE IF NOT EXISTS public.client_documents (
+    id          TEXT        PRIMARY KEY,
+    filename    TEXT        NOT NULL,
+    file_type   TEXT        NOT NULL,
+    file_size   BIGINT      NOT NULL DEFAULT 0,
+    status      TEXT        NOT NULL DEFAULT 'UPLOADING',
+    chunk_count INTEGER     NOT NULL DEFAULT 0,
+    tenant_id   TEXT        NOT NULL DEFAULT 'default',
+    user_id     TEXT,
+    s3_key      TEXT,
+    error       TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO public.ingestion_sources (source_type, display_name, enabled) VALUES
+    ('documents', 'Documents Clients', TRUE)
+ON CONFLICT (source_type) DO NOTHING;

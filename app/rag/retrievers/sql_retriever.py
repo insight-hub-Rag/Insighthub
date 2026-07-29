@@ -25,6 +25,7 @@ ALLOWED_FILTER_KEYS = {
     "jira":       {"status", "priority", "assignee", "issue_type", "comment_author", "connector_instance_id"},
     "confluence": {"space_id", "status", "version", "connector_instance_id"},
     "sharepoint": {"list_title", "author", "editor", "file_ref", "connector_instance_id"},
+    "documents":  {"filename", "file_type", "tenant_id", "user_id", "connector_instance_id"},
 }
 
 
