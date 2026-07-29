@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ============================================================
 # InsightHub — NL2SQL : schéma + données fictives de test
 # Exécuté par docker-entrypoint-initdb.d après la création

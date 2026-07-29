@@ -55,6 +55,8 @@ jobs:
     env:
       DATABASE_URL: postgresql+asyncpg://insighthub:insighthub@localhost:5432/insighthub
       POSTGRES_PASSWORD: insighthub
+      # Clé Fernet de test uniquement, sans donnée ni secret de production.
+      CONNECTOR_ENCRYPTION_KEY: hnkI7N1C1xGtIvZD2aMXp-lT0ofyIvrmAFZacUDOxgM=
 
     steps:
       - uses: actions/checkout@v4
@@ -70,5 +72,39 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run pytest
-        run: pytest -q --tb=short
+      - name: Initialize test database schema
+        run: >-
+          python -c "import asyncio;
+          from app.db.init_db import initialize_database_schema;
+          asyncio.run(initialize_database_schema())"
+
+      - name: Run core tests
+        run: >-
+          pytest -q --tb=short
+          --ignore=tests/test_servicenow_client_http.py
+          --ignore=tests/test_servicenow_pipeline.py
+          --ignore=tests/test_sqlite_upload.py
+          --ignore=tests/test_dump_upload_pipeline.py
+
+      # Ces tests lancent leur propre serveur Uvicorn et doivent rester dans
+      # une session asyncio distincte du moteur asyncpg des tests principaux.
+      - name: Run ServiceNow tests
+        run: >-
+          pytest -q --tb=short
+          tests/test_servicenow_client_http.py
+          tests/test_servicenow_pipeline.py
+
+      # Chaque TestClient crée sa propre boucle. Un processus pytest par cas
+      # empêche SQLAlchemy de réutiliser une connexion liée à l'ancienne boucle.
+      - name: Run SQLite upload tests
+        run: |
+          pytest -q --tb=short tests/test_sqlite_upload.py::TestSqliteUpload::test_upload_sqlite_invalid_extension
+          pytest -q --tb=short tests/test_sqlite_upload.py::TestSqliteUpload::test_upload_sqlite_invalid_signature
+          pytest -q --tb=short tests/test_sqlite_upload.py::TestSqliteUpload::test_upload_sqlite_success
+
+      # Même isolation pour les imports de dumps, qui utilisent TestClient.
+      - name: Run dump upload pipeline tests
+        run: |
+          pytest -q --tb=short tests/test_dump_upload_pipeline.py::TestDumpUploadPipeline::test_upload_invalid_extension
+          pytest -q --tb=short tests/test_dump_upload_pipeline.py::TestDumpUploadPipeline::test_upload_mysql_dump_success
+          pytest -q --tb=short tests/test_dump_upload_pipeline.py::TestDumpUploadPipeline::test_upload_postgres_dump_success

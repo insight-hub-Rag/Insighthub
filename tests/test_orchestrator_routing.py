@@ -1,8 +1,14 @@
 
 
+import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+# Le venv de développement minimal n'installe pas forcément boto3. Ces
+# tests d'orchestration mockent tous les accès externes et n'ont pas besoin
+# du SDK AWS réel ; ce stub permet donc leur collecte locale sans réseau.
+sys.modules.setdefault("boto3", MagicMock())
 
 from app.core.models import RoutingDecision, RAGResponse, RetrievedChunk, AgentResult
 from app.rag.orchestrator import Orchestrator
@@ -306,3 +312,61 @@ async def test_forced_instance_id_avec_vrai_filtre_declenche_filters_were_reques
     )
 
     assert captured_kwargs["filters_were_requested"] is True
+
+
+@pytest.mark.asyncio
+async def test_historique_condense_la_question_avant_tout_le_pipeline(
+    orchestrator, monkeypatch
+):
+    standalone = "Quelle est la priorité du ticket IH-1 ?"
+    monkeypatch.setattr(
+        orchestrator.question_condenser,
+        "condense",
+        lambda question, history: standalone,
+    )
+
+    captured = {}
+
+    def fake_rule_route(query):
+        captured["routed_question"] = query.cleaned_text
+        return RoutingDecision(
+            sources=["jira"], search_type="hybrid", filters={},
+            confidence=1.0, router_used="rule", reasoning="ID", in_scope=True,
+        )
+
+    monkeypatch.setattr(orchestrator.rule_router, "route", fake_rule_route)
+
+    chunk = RetrievedChunk(
+        source_type="jira", document_id="IH-1", chunk_id="jira-IH-1-0",
+        content="Priorité High", title="[IH-1] Timeout", sql_score=1.0,
+    )
+
+    async def fake_agent_manager_run(query, routing):
+        captured["retrieval_question"] = query.cleaned_text
+        return [AgentResult(source_type="jira", chunks=[chunk])]
+
+    monkeypatch.setattr(orchestrator.agent_manager, "run", fake_agent_manager_run)
+
+    def fake_generate(question, chunks, **kwargs):
+        captured["generated_question"] = question
+        return RAGResponse(
+            question=question, answer="High", sources=[], model="test",
+            total_chunks_searched=len(chunks),
+        )
+
+    monkeypatch.setattr(orchestrator.generator, "generate", fake_generate)
+
+    response = await orchestrator.ask(
+        "et sa priorité ?",
+        forced_sources=["jira"],
+        forced_instance_id="instance-1",
+        conversation_history=[
+            {"role": "user", "content": "IH-1"},
+            {"role": "assistant", "content": "Le ticket concerne un timeout."},
+        ],
+    )
+
+    assert captured["routed_question"] == standalone
+    assert captured["retrieval_question"] == standalone
+    assert captured["generated_question"] == standalone
+    assert response.question == standalone

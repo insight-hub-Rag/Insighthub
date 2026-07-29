@@ -11,6 +11,7 @@ from app.rag.agents.manager import AgentManager
 from app.rag.fusion.global_fusion import global_fusion
 from app.rag.reranker.cross_encoder import CrossEncoderReranker
 from app.rag.generator.generator import Generator
+from app.rag.conversation.question_condenser import QuestionCondenser
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ class Orchestrator:
         self.agent_manager = AgentManager()
         self.reranker = CrossEncoderReranker()
         self.generator = Generator()
+        self.question_condenser = QuestionCondenser()
 
     async def ask(
         self,
@@ -37,14 +39,23 @@ class Orchestrator:
         user_id: str | None = None,
         forced_sources: list[str] | None = None,
         forced_instance_id: str | None = None,
+        conversation_history: list[dict] | None = None,
     ) -> RAGResponse:
         """
         `forced_sources` : utilisé UNIQUEMENT par le chat scopé specifique
         """
         t_start = time.time()
 
+        # 0. Une question de suivi ("ce ticket", "sa priorité") doit être
+        # rendue autonome avant le routage, la recherche et la génération.
+        standalone_question = self.question_condenser.condense(
+            question, conversation_history
+        )
+
         # 1. Preprocessing
-        preprocessed = self.preprocessor.run(question, user_id=user_id)
+        preprocessed = self.preprocessor.run(
+            standalone_question, user_id=user_id
+        )
 
         # 2. Routage — Rule Router d'abord, LLM Router en repli
         routing = self.rule_router.route(preprocessed)
@@ -78,7 +89,7 @@ class Orchestrator:
                 "[Orchestrator] Question hors scope → réponse directe, "
                 "pipeline RAG sauté"
             )
-            return self.generator.generate_out_of_scope(question)
+            return self.generator.generate_out_of_scope(standalone_question)
 
         # 3. Agent Manager — lance les agents des sources choisies en parallèle
 
@@ -87,7 +98,7 @@ class Orchestrator:
         if not agent_results:
             logger.warning("[Orchestrator] Aucun agent n'a retourné de résultat")
             return RAGResponse(
-                question=question,
+                question=standalone_question,
                 answer="Je n'ai pas trouvé d'informations pertinentes.",
                 sources=[],
                 model="none",
@@ -100,7 +111,7 @@ class Orchestrator:
         if not fused_chunks:
             logger.warning("[Orchestrator] Fusion globale vide après filtrage")
             return RAGResponse(
-                question=question,
+                question=standalone_question,
                 answer="Je n'ai pas trouvé d'informations pertinentes.",
                 sources=[],
                 model="none",
@@ -128,7 +139,7 @@ class Orchestrator:
             k: v for k, v in routing.filters.items() if k not in _SCOPE_ONLY_FILTER_KEYS
         }
         response = self.generator.generate(
-            question, reranked_chunks,
+            standalone_question, reranked_chunks,
             filters_were_requested=bool(real_filters),
         )
 

@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import IntEnum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -104,6 +104,13 @@ class ConnectorCatalogItem(BaseModel):
     display_name: str
     description: str
     required_auth_fields: list[str]
+
+
+class ChatHistoryItem(BaseModel):
+    """Un message précédent envoyé au chat scopé."""
+
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=4000)
 
 
 class DumpTableSummary(BaseModel):
