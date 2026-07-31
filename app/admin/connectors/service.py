@@ -1,5 +1,3 @@
-
-
 import json
 import logging
 import time
@@ -27,14 +25,20 @@ from app.admin.connectors.models import (
     ConnectorUpdate,
     DumpTableSummary,
     DumpUploadResponse,
+    SourceType,
     SyncStats,
 )
 from app.admin.connectors.repository import ConnectorRepository
 
-# Champs modifiables par PATCH — whitelist explicite, jamais construite
-# depuis les clés brutes du payload (protection contre l'injection de
-# colonnes arbitraires dans le UPDATE SQL du repository).
 _UPDATABLE_FIELDS = {"instance_label", "sync_scope", "sync_frequency_minutes"}
+
+_SQL_SOURCE_TYPES = {
+    SourceType.POSTGRESQL,
+    SourceType.MYSQL,
+    SourceType.ORACLE,
+    SourceType.MSSQL,
+    SourceType.SQLITE,
+}
 
 
 class ConnectorService:
@@ -87,9 +91,6 @@ class ConnectorService:
         if payload.sync_frequency_minutes is not None:
             fields["sync_frequency_minutes"] = int(payload.sync_frequency_minutes)
 
-        # auth_fields géré à part : nécessite un re-chiffrement, pas une
-        # simple valeur de colonne comme les autres champs de `fields`.
-
         if payload.auth_fields is not None:
             existing_row = await self._repo.get_by_id(session, connector_id)
             existing_auth = (
@@ -102,7 +103,6 @@ class ConnectorService:
                     merged_auth[key] = value
             fields["auth_encrypted"] = encrypt_auth_fields(merged_auth)
 
-       
         safe_fields = {
             k: v for k, v in fields.items()
             if k in _UPDATABLE_FIELDS or k == "auth_encrypted"
@@ -111,8 +111,7 @@ class ConnectorService:
         row = await self._repo.update(session, connector_id, safe_fields)
         if row is None:
             return None
-        # Seulement si la fréquence a réellement changé 
-        
+
         if "sync_frequency_minutes" in safe_fields:
             self._sync_eventbridge_rule(row)
         return self._to_detail(row)
@@ -120,6 +119,15 @@ class ConnectorService:
     async def toggle_connector(
         self, session: AsyncSession, connector_id: UUID, enabled: bool
     ) -> Optional[ConnectorDetail]:
+        row = await self._repo.get_by_id(session, connector_id)
+        if row is None:
+            return None
+
+        if enabled and row["source_type"] in _SQL_SOURCE_TYPES:
+            await self._repo.deactivate_all_sql_connectors(
+                session, exclude_id=connector_id
+            )
+
         row = await self._repo.update(session, connector_id, {"is_enabled": enabled})
         if row is None:
             return None
@@ -170,16 +178,6 @@ class ConnectorService:
     # ------------------------------------------------------------
 
     async def test_connection(self, session: AsyncSession, connector_id: UUID) -> bool:
-        """
-        Instancie le vrai client (Jira/Confluence/SharePoint/ServiceNow)
-        avec la config déchiffrée de CETTE instance précise, et appelle
-        son .test_connection() existant. Ne synchronise rien, ne
-        modifie pas la base — juste un ping d'authentification.
-        Retourne False (au lieu de laisser planter) si le connecteur
-        n'existe pas ou si l'appel réseau échoue pour une raison
-        quelconque — la cause précise est déjà loguée par le client
-        lui-même (cf. client.test_connection()).
-        """
         row = await self._repo.get_by_id(session, connector_id)
         if row is None:
             return False
@@ -189,12 +187,6 @@ class ConnectorService:
         return await client.test_connection()
 
     async def trigger_sync(self, session: AsyncSession, connector_id: UUID) -> dict[str, Any]:
-        """
-        Déclenche une synchronisation complète pour CETTE instance
-        précise (peut couvrir plusieurs projets/espaces/listes selon
-        sync_scope). Met à jour last_sync_* dans tous les cas (succès
-        ou échec), pour que l'UI reflète toujours le dernier essai réel.
-        """
         row = await self._repo.get_by_id(session, connector_id)
         if row is None:
             raise ValueError("Connecteur introuvable")
@@ -257,11 +249,6 @@ class ConnectorService:
 
         return {"success": success, **stats, "error": error_message}
 
-    # ------------------------------------------------------------
-    # Utilitaire interne — récupère les credentials déchiffrés (pour
-    # test_connection / sync, PAS pour l'affichage API)
-    # ------------------------------------------------------------
-
     async def get_decrypted_auth(
         self, session: AsyncSession, connector_id: UUID
     ) -> Optional[dict[str, str]]:
@@ -315,6 +302,14 @@ class ConnectorService:
     # ------------------------------------------------------------
     # Ingestion & Materialisation des Dumps SQL (Multi-moteur Sandbox)
     # ------------------------------------------------------------
+    #
+    # CORRECTIF FINAL : plus aucune tentative de garder une connexion
+    # persistante vers la base cible. On scanne le schéma une fois
+    # (via sandbox temporaire ou fichier SQLite direct), on le stocke
+    # dans schema_store (base interne InsightHub), et c'est TOUT.
+    # NL2SQLAgent n'exécute plus jamais de SQL réel — il répond
+    # toujours à partir du schéma stocké (voir orchestrator.py).
+    # ------------------------------------------------------------
 
     async def process_dump_upload(
         self,
@@ -322,7 +317,7 @@ class ConnectorService:
         file_name: str,
         file_bytes: bytes,
         engine_type: str = "sqlite",
-        tenant_id: str = "default",
+        tenant_id: str | None = None,  # ignoré, conservé pour compat endpoint existant
     ) -> DumpUploadResponse:
         import uuid
         import sqlite3
@@ -331,15 +326,12 @@ class ConnectorService:
         from app.admin.connectors.sandbox_manager import SandboxManager
         from app.nl2sql.schema_scanner import SchemaScanner
         from app.nl2sql.factory import build_nl2sql_agent
-        from app.nl2sql.connection import target_connection_manager
-        from config import settings
 
         from app.admin.connectors.dump_parser import DumpParseError, DumpParser
 
         sandbox_mgr = SandboxManager()
         scanner = SchemaScanner()
-        
-        # Handle SQLite raw database file vs SQL text dump
+
         is_sqlite_binary = file_bytes.startswith(b"SQLite format 3\x00")
         is_postgres_binary = file_bytes.startswith(b"PGDMP")
 
@@ -347,30 +339,46 @@ class ConnectorService:
             raise DumpParseError(
                 "Le fichier fourni est un dump binaire PostgreSQL (PGDMP). Veuillez exporter votre base au format SQL texte (Plain text) avant de l'importer."
             )
-        
+
+        # Création du connecteur AVANT le scan — son UUID devient le
+        # connection_id unique utilisé pour stocker/retrouver le schéma.
+        connector_row = await self._repo.create(
+            session,
+            source_type=engine_type,
+            instance_label=file_name,
+            auth_encrypted=encrypt_auth_fields({}),
+            sync_scope={},
+            sync_frequency_minutes=0,
+        )
+        connection_id = str(connector_row["id"])
+
+        # Cette base devient la base active — exclusivité SQL.
+        await self._repo.deactivate_all_sql_connectors(
+            session, exclude_id=connector_row["id"]
+        )
+        await self._repo.update(session, connector_row["id"], {"is_enabled": True})
+
         if is_sqlite_binary:
+            # Fichier SQLite temporaire, uniquement pour le scan — pas
+            # gardé comme connexion active pour l'exécution.
             sqlite_dir = Path(__file__).resolve().parent.parent.parent.parent / "sqlite_databases"
             sqlite_dir.mkdir(parents=True, exist_ok=True)
             safe_filename = f"sqlite_{uuid.uuid4().hex[:8]}.sqlite"
             filepath = sqlite_dir / safe_filename
             filepath.write_bytes(file_bytes)
-            
+
             creator = lambda: sqlite3.connect(f"file:{filepath.resolve().as_posix()}?mode=ro", uri=True)
             temp_engine = create_engine("sqlite://", creator=creator)
-            schema_scan = scanner.scan(temp_engine, connection_id=tenant_id)
+            schema_scan = scanner.scan(temp_engine, connection_id=connection_id)
             temp_engine.dispose()
-            
-            db_url = f"sqlite:///{filepath.resolve().as_posix()}"
-            settings.nl2sql_target_db_url = db_url
-            target_connection_manager.dispose(tenant_id)
-            
+
             agent = build_nl2sql_agent()
-            await agent._schema_cache.invalidate(tenant_id)
+            await agent._schema_cache.invalidate(connection_id)
             await agent._schema_cache.refresh(session, schema_scan)
-            
+
             return DumpUploadResponse(
                 status="ok",
-                connection_id=tenant_id,
+                connection_id=connection_id,
                 engine_dialect="sqlite",
                 database_name=file_name,
                 tables=[
@@ -384,26 +392,27 @@ class ConnectorService:
                 ]
             )
 
-        # Text dump processing (PostgreSQL, MySQL, Oracle, SQL Server, or SQLite text dump)
+        # Dump texte (Postgres/MySQL/Oracle/SQL Server) : sandbox
+        # temporaire, détruit à la fin du `with` — seul le schéma
+        # scanné survit, dans schema_store.
         sql_text = file_bytes.decode("utf-8", errors="ignore")
-        
-        # Auto-detect engine from DDL content if possible
+
         parser_instance = DumpParser()
         detected_engine = parser_instance.detect_engine(sql_text)
         if detected_engine:
             logger.info(f"[process_dump_upload] Auto-detected engine: {detected_engine} (requested: {engine_type})")
             engine_type = detected_engine
 
-        with sandbox_mgr.create_sandbox(engine_type, sql_text, tenant_id=tenant_id) as sandbox_engine:
-            schema_scan = scanner.scan(sandbox_engine, connection_id=tenant_id)
-            
+        with sandbox_mgr.create_sandbox(engine_type, sql_text, tenant_id=connection_id) as sandbox_engine:
+            schema_scan = scanner.scan(sandbox_engine, connection_id=connection_id)
+
             agent = build_nl2sql_agent()
-            await agent._schema_cache.invalidate(tenant_id)
+            await agent._schema_cache.invalidate(connection_id)
             await agent._schema_cache.refresh(session, schema_scan)
 
         return DumpUploadResponse(
             status="ok",
-            connection_id=tenant_id,
+            connection_id=connection_id,
             engine_dialect=engine_type.lower(),
             database_name=file_name,
             tables=[
@@ -415,4 +424,4 @@ class ConnectorService:
                 )
                 for t in schema_scan.tables
             ]
-        )
+        )

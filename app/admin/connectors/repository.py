@@ -1,5 +1,3 @@
-
-
 from typing import Any, Optional
 from uuid import UUID
 
@@ -7,11 +5,19 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.admin.connectors.models import SourceType
+
 
 class DuplicateInstanceLabelError(Exception):
     """Levée quand (source_type, instance_label) existe déjà — au lieu
     de laisser remonter une IntegrityError brute jusqu'à un 500 HTTP
     générique et incompréhensible côté frontend."""
+
+
+_SQL_SOURCE_TYPES = {
+    SourceType.POSTGRESQL, SourceType.MYSQL,
+    SourceType.ORACLE, SourceType.MSSQL, SourceType.SQLITE,
+}
 
 
 class ConnectorRepository:
@@ -69,7 +75,6 @@ class ConnectorRepository:
                 ) from e
             raise
         return dict(result.mappings().first())
-        return dict(result.mappings().first())
 
     async def update(
         self, session: AsyncSession, connector_id: UUID, fields: dict[str, Any]
@@ -82,7 +87,7 @@ class ConnectorRepository:
             return await self.get_by_id(session, connector_id)
 
         set_clause = ", ".join(f"{key} = :{key}" for key in fields)
-        params = {**fields, "id": str(connector_id), }
+        params = {**fields, "id": str(connector_id)}
 
         try:
             result = await session.execute(
@@ -145,6 +150,47 @@ class ConnectorRepository:
         )
         await session.commit()
         return result.rowcount > 0
+
+    # ------------------------------------------------------------
+    # Exclusivité "une seule base SQL active à la fois" (cf. UI Bases
+    # de données). CORRECTIF : table connectors -> connector_configs,
+    # cohérent avec le reste du repository (l'erreur initiale aurait
+    # provoqué un crash au premier appel, la table `connectors`
+    # n'existant pas).
+    # ------------------------------------------------------------
+
+    async def get_active_sql_connector(self, session: AsyncSession) -> Optional[dict[str, Any]]:
+        """Retourne le connecteur SQL actuellement actif (is_enabled=True),
+        ou None si aucune base n'est activée. Un seul actif possible à la fois."""
+        result = await session.execute(
+            text(
+                """
+                SELECT * FROM connector_configs
+                WHERE source_type = ANY(:sql_types) AND is_enabled = TRUE
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """
+            ),
+            {"sql_types": list(_SQL_SOURCE_TYPES)},
+        )
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+    async def deactivate_all_sql_connectors(
+        self, session: AsyncSession, exclude_id: Optional[UUID] = None
+    ) -> None:
+        """Désactive tous les connecteurs SQL sauf exclude_id — garantit
+        l'exclusivité 'une seule active à la fois' vue dans l'UI."""
+        query = """
+            UPDATE connector_configs SET is_enabled = FALSE
+            WHERE source_type = ANY(:sql_types)
+        """
+        params: dict[str, Any] = {"sql_types": list(_SQL_SOURCE_TYPES)}
+        if exclude_id is not None:
+            query += " AND id != :exclude_id"
+            params["exclude_id"] = str(exclude_id)
+        await session.execute(text(query), params)
+        await session.commit()
 
 
 def _to_json(value: dict[str, Any]) -> str:

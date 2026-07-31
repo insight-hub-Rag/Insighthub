@@ -7,6 +7,10 @@ Séparé de orchestrator.py pour garder NL2SQLAgent testable en isolation
 
 Instance unique réutilisée entre les requêtes — même pattern que
 _orchestrator dans app/api/router.py.
+
+CORRECTIF : connection_id="default" retiré de NL2SQLConfig. La base
+active est désormais résolue dynamiquement à chaque question par
+NL2SQLAgent.run() (voir orchestrator.py), pas figée au démarrage.
 """
 
 from config import settings
@@ -27,7 +31,7 @@ def build_nl2sql_agent() -> NL2SQLAgent:
         return _agent_instance
 
     config = NL2SQLConfig(
-        connection_id="default",
+        connection_id=None,  # résolu dynamiquement à chaque run() — plus jamais figé
         database_url=settings.nl2sql_target_db_url,
         latency_threshold_ms=settings.nl2sql_latency_threshold_ms,
         schema_cache_ttl_seconds=settings.nl2sql_schema_ttl_seconds,

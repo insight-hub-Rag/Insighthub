@@ -209,13 +209,13 @@ async def upload_sql_dump(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     from app.admin.connectors.service import ConnectorService
-    
+
     ALLOWED_EXTENSIONS = {".sql", ".sqlite", ".sqlite3", ".db", ".db3", ".s3db", ".sl3", ".txt", ".dump"}
     ext = Path(file.filename or "").suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         allowed_str = ", ".join(sorted(ALLOWED_EXTENSIONS))
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Extension de fichier non autorisée. Extensions autorisées : ({allowed_str})"
         )
 
@@ -244,112 +244,63 @@ async def upload_sqlite_database(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    """
+    CORRECTIF : cet endpoint dupliquait toute la logique de
+    process_dump_upload avec connection_id="default" codé en dur,
+    contournant totalement l'isolation par connecteur mise en place
+    (une base = un connector_id unique, une seule active à la fois).
+    Il délègue désormais à ConnectorService.process_dump_upload(),
+    exactement comme /nl2sql/upload-dump — plus de deuxième chemin
+    divergent.
+    """
+    from app.admin.connectors.service import ConnectorService
+
     ALLOWED_SQLITE_EXTENSIONS = {".sqlite", ".sqlite3", ".db", ".db3", ".s3db", ".sl3", ".sql"}
     ext = Path(file.filename or "").suffix.lower()
     if ext not in ALLOWED_SQLITE_EXTENSIONS:
         allowed_str = ", ".join(sorted(ALLOWED_SQLITE_EXTENSIONS))
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Extension de fichier non autorisée. Seuls les fichiers ({allowed_str}) sont autorisés."
         )
-    
-    # Check file size (max 20MB)
+
     MAX_FILE_SIZE = 20 * 1024 * 1024
     contents = await file.read()
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="Le fichier est trop volumineux (max 20 Mo).")
-    
-    # Create folder if it doesn't exist
-    sqlite_dir = Path(__file__).resolve().parent.parent.parent / "sqlite_databases"
-    sqlite_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Secure filename to prevent path traversal
-    safe_filename = f"sqlite_{uuid.uuid4().hex}.sqlite"
-    filepath = sqlite_dir / safe_filename
-    
-    if ext == ".sql":
-        try:
-            sql_text = contents.decode("utf-8", errors="ignore")
-            import sqlite3
-            conn = sqlite3.connect(filepath)
-            cursor = conn.cursor()
-            cursor.executescript(sql_text)
-            conn.commit()
-            conn.close()
-        except Exception as err:
-            if filepath.exists():
-                filepath.unlink()
-            raise HTTPException(status_code=400, detail=f"Erreur lors de la lecture du script SQL : {str(err)}")
-    else:
-        # Check SQLite signature
-        if not contents.startswith(b"SQLite format 3\x00"):
-            raise HTTPException(status_code=400, detail="Fichier SQLite invalide ou corrompu.")
-        
-        # Save to disk
-        with open(filepath, "wb") as f:
-            f.write(contents)
-        
-    # Scan the schema
-    db_url = f"sqlite:///{filepath.resolve().as_posix()}"
-    
+
+    service = ConnectorService()
     try:
-        import sqlite3
-        creator = lambda: sqlite3.connect(f"file:{filepath.resolve().as_posix()}?mode=ro", uri=True)
-        temp_engine = create_engine("sqlite://", creator=creator)
-        scanner = SchemaScanner()
-        schema_scan = scanner.scan(temp_engine, connection_id="default")
-        temp_engine.dispose()
+        res = await service.process_dump_upload(
+            session=db,
+            file_name=file.filename or "database.sqlite",
+            file_bytes=contents,
+            engine_type="sqlite",
+        )
+        return res.model_dump()
     except Exception as exc:
-        if filepath.exists():
-            filepath.unlink()
-        logger.error(f"Failed to scan SQLite schema: {exc}")
-        raise HTTPException(status_code=400, detail=f"Impossible de lire le schéma SQLite : {str(exc)}")
-        
-    # Activate this database for the application
-    settings.nl2sql_target_db_url = db_url
-    update_env_variable("NL2SQL_TARGET_DB_URL", db_url)
-    
-    # Invalidate current agent instance and cache
-    factory._agent_instance = None
-    target_connection_manager.dispose("default")
-    
-    # Invalidate schema cache & save the new schema in store/cache
-    agent = build_nl2sql_agent()
-    await agent._schema_cache.invalidate("default")
-    await agent._schema_cache.refresh(db, schema_scan)
-    
-    return {
-        "status": "ok",
-        "connection_id": "default",
-        "engine_dialect": "sqlite",
-        "database_name": file.filename,
-        "tables": [
-            {
-                "id": f"{t.name}-{uuid.uuid4().hex[:6]}",
-                "name": t.name,
-                "columns": [c.name for c in t.columns],
-                "accessible": True,
-            }
-            for t in schema_scan.tables
-        ]
-    }
+        logger.error(f"Failed to process sqlite upload: {exc}")
+        raise HTTPException(status_code=400, detail=f"Erreur lors du traitement du fichier : {str(exc)}")
 
 
-@router.post("/nl2sql/rescan-schema", summary="Force un re-scan du schéma cible")
+@router.post("/nl2sql/rescan-schema", summary="Ré-analyser le schéma (nécessite un nouvel upload)")
 async def rescan_nl2sql_schema() -> dict:
-    agent = build_nl2sql_agent()
-    try:
-        schema = await agent.rescan_schema()
-        return {
-            "status":          "ok",
-            "connection_id":   schema.connection_id,
-            "engine_dialect":  schema.engine_dialect,
-            "tables_scanned":  len(schema.tables),
-            "scanned_at":      schema.scanned_at,
-        }
-    except Exception as exc:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    """
+    CORRECTIF : NL2SQLAgent.rescan_schema() n'existe plus — il n'y a
+    plus de connexion persistante à "rescanner" à ce stade du projet
+    (sandbox détruit après le scan initial, dump schema-only sans
+    exécution réelle). Pour changer/rafraîchir un schéma, il faut
+    ré-uploader le dump via /nl2sql/upload-dump, qui recrée un
+    connecteur et un schéma à jour.
+    """
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Le rescan à chaud n'est pas disponible à ce stade : "
+            "aucune connexion persistante n'est conservée après l'upload initial. "
+            "Ré-uploadez le dump via /nl2sql/upload-dump pour rafraîchir le schéma."
+        ),
+    )
 
 
 @router.get("/nl2sql/monitoring/stats", summary="Stats dashboard SQL Monitoring")
@@ -485,4 +436,3 @@ async def save_conversation_message(
     except Exception as exc:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-
