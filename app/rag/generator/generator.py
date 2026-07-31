@@ -4,6 +4,13 @@ rerankés (ou passés tels quels si le reranking a été sauté pour un
 match exact par ID), les fait passer par le Context Builder (budget de
 tokens), construit le prompt, et appelle le LLM (Groq en dev, Bedrock
 en prod).
+
+CORRECTIF : les chunks source_type="sql" produits par NL2SQLAgent
+contiennent déjà une réponse finale toute faite (SQL généré + notice
+explicite, ou message d'état comme "aucune base active") — ce texte ne
+doit JAMAIS repasser dans le LLM générateur, qui le paraphrase et fait
+disparaître la requête SQL et la notice. On bypass donc le LLM pour ce
+cas précis et on retourne le contenu du chunk tel quel.
 """
 
 import logging
@@ -15,6 +22,16 @@ from app.rag.generator.prompt_builder import build_prompt
 from app.rag.generator.context_builder import build_context
 
 logger = logging.getLogger(__name__)
+
+# Statuts produits par NL2SQLAgent (voir app/nl2sql/orchestrator.py)
+# qui contiennent déjà une réponse finale prête à afficher — jamais à
+# reformuler via le LLM générateur.
+_SQL_PASSTHROUGH_STATUSES = {
+    "preview",
+    "rejected",
+    "no_active_connection",
+    "no_schema",
+}
 
 
 def _ensure_all_sources_mentioned(answer: str, chunks: list[RetrievedChunk]) -> str:
@@ -36,8 +53,6 @@ def _ensure_all_sources_mentioned(answer: str, chunks: list[RetrievedChunk]) -> 
         if not c.document_id or c.document_id in answer:
             continue
         if c.document_id in seen_document_ids:
-            # Même document déjà ajouté via un autre chunk (ex: 2
-            # passages du même document Confluence) — ne pas dupliquer.
             continue
         seen_document_ids.add(c.document_id)
         missing.append(c)
@@ -52,13 +67,19 @@ def _ensure_all_sources_mentioned(answer: str, chunks: list[RetrievedChunk]) -> 
 
 def _source_label_for_completion(chunk: RetrievedChunk) -> str:
     if chunk.title and chunk.title.startswith(f"[{chunk.document_id}]"):
-        # Le titre contient déjà l'ID en préfixe (ex: transformer Jira
-        # qui produit "[IH-1] API Gateway timeout...") — ne pas le
-        # répéter une deuxième fois.
         return chunk.title
     if chunk.title:
         return f"[{chunk.document_id}] {chunk.title}"
     return f"[{chunk.document_id}]"
+
+
+def _is_sql_passthrough_chunk(chunk: RetrievedChunk) -> bool:
+    """True si ce chunk vient de NL2SQLAgent et contient déjà une
+    réponse finale toute faite (voir _SQL_PASSTHROUGH_STATUSES)."""
+    if chunk.source_type != "sql":
+        return False
+    status = (chunk.metadata or {}).get("status")
+    return status in _SQL_PASSTHROUGH_STATUSES
 
 
 OUT_OF_SCOPE_SYSTEM_PROMPT = """Tu es InsightHub, un assistant interne
@@ -127,6 +148,28 @@ class Generator:
                 sources=[],
                 model="none",
                 total_chunks_searched=0,
+            )
+
+        # ------------------------------------------------------------
+        # CORRECTIF : bypass total du LLM pour les chunks SQL
+        # "passthrough" (preview/rejected/no_active_connection/
+        # no_schema) — leur `content` est DÉJÀ la réponse finale
+        # (SQL généré + notice, ou message d'état). Les repasser dans
+        # le LLM générateur les fait paraphraser et perdre le bloc SQL.
+        # ------------------------------------------------------------
+        sql_passthrough_chunks = [c for c in chunks if _is_sql_passthrough_chunk(c)]
+        if sql_passthrough_chunks:
+            answer = sql_passthrough_chunks[0].content
+            logger.info(
+                "[Generator] Bypass LLM — chunk SQL passthrough "
+                f"(status={sql_passthrough_chunks[0].metadata.get('status')})"
+            )
+            return RAGResponse(
+                question=question,
+                answer=answer,
+                sources=self._build_sources(chunks),
+                model="sql-passthrough",
+                total_chunks_searched=len(chunks),
             )
 
         context_chunks = build_context(chunks, max_tokens=max_context_tokens)

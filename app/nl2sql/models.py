@@ -51,13 +51,17 @@ class SchemaScanResult:
 class NL2SQLConfig:
     """
     Configuration d'une connexion à une base cible à scanner.
-    Aujourd'hui : une seule instance construite depuis settings (.env).
-    Demain : plusieurs instances, une par client, chargées depuis une
-    table de config plutôt que l'environnement — cette dataclass ne
-    change pas, seule sa source de construction change.
+
+    CORRECTIF : connection_id n'est plus une valeur figée au démarrage
+    ("default"). Il devient Optional et n'est plus utilisé comme source
+    de vérité — orchestrator.py résout désormais le connection_id réel
+    à chaque question, depuis le connecteur SQL actuellement actif en
+    base (voir ConnectorRepository.get_active_sql_connector). Le champ
+    est conservé ici uniquement pour compatibilité de signature, pas
+    comme donnée utilisée en pratique.
     """
-    connection_id: str            # identifiant stable, ex: "default" ou "client_x"
-    database_url: str
+    connection_id: Optional[str] = None
+    database_url: str = ""
     latency_threshold_ms: float = 2000.0   # au-delà : déclenche query_optimizer
     schema_cache_ttl_seconds: int = 86400  # 24h — re-scan automatique périodique
 

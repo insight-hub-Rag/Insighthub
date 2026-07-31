@@ -5,12 +5,11 @@ Gestion des connexions SQLAlchemy vers les bases CIBLES (celles que le
 NL2SQL Agent interroge), à ne pas confondre avec app/db/database.py qui
 gère la connexion vers la base d'InsightHub elle-même.
 
-Phase actuelle : une seule connexion (celle définie dans .env).
-Phase future : plusieurs connexions, une par client — c'est pourquoi
-rien ici ne dépend directement de `settings`. Tout passe par un
-NL2SQLConfig explicite, injecté par l'appelant (orchestrator.py),
-qui lui pourra un jour aller chercher cette config ailleurs qu'en
-env (table de config, secret manager...) sans que ce fichier change.
+CORRECTIF : get_engine/get_session prenaient un NL2SQLConfig complet
+avec connection_id figé ("default"). Ils prennent maintenant
+connection_id et database_url séparément, passés explicitement par
+l'appelant (orchestrator.py) à chaque question, résolus dynamiquement
+depuis la base SQL actuellement active — plus aucune valeur figée.
 
 Connexions synchrones (pas asyncpg) : l'introspection SQLAlchemy
 (`inspect()`) et l'exécution de requêtes générées dynamiquement sont
@@ -25,8 +24,6 @@ from typing import Iterator
 
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
-
-from app.nl2sql.models import NL2SQLConfig
 
 logger = logging.getLogger(__name__)
 
@@ -43,15 +40,15 @@ class TargetConnectionManager:
         self._engines: dict[str, Engine] = {}
         self._session_factories: dict[str, sessionmaker] = {}
 
-    def get_engine(self, config: NL2SQLConfig) -> Engine:
-        if config.connection_id not in self._engines:
+    def get_engine(self, connection_id: str, database_url: str) -> Engine:
+        if connection_id not in self._engines:
             logger.info(
                 f"[TargetConnectionManager] Création engine pour "
-                f"connection_id='{config.connection_id}'"
+                f"connection_id='{connection_id}'"
             )
-            if config.database_url.startswith("sqlite"):
+            if database_url.startswith("sqlite"):
                 import sqlite3
-                db_path = config.database_url.replace("sqlite:///", "")
+                db_path = database_url.replace("sqlite:///", "")
                 if "?" in db_path:
                     db_path = db_path.split("?")[0]
                 creator = lambda: sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
@@ -61,24 +58,24 @@ class TargetConnectionManager:
                 )
             else:
                 engine = create_engine(
-                    config.database_url,
+                    database_url,
                     pool_pre_ping=True,   # évite les connexions mortes après idle
                     pool_size=5,
                     max_overflow=5,
                 )
-            self._engines[config.connection_id] = engine
-            self._session_factories[config.connection_id] = sessionmaker(
+            self._engines[connection_id] = engine
+            self._session_factories[connection_id] = sessionmaker(
                 bind=engine, expire_on_commit=False
             )
-        return self._engines[config.connection_id]
+        return self._engines[connection_id]
 
     @contextmanager
-    def get_session(self, config: NL2SQLConfig) -> Iterator[Session]:
+    def get_session(self, connection_id: str, database_url: str) -> Iterator[Session]:
         """Session courte durée, à utiliser pour l'exécution des
         requêtes générées — se ferme systématiquement, même en cas
         d'erreur, pour ne jamais laisser une connexion ouverte."""
-        self.get_engine(config)  # s'assure que l'engine existe
-        session_factory = self._session_factories[config.connection_id]
+        self.get_engine(connection_id, database_url)  # s'assure que l'engine existe
+        session_factory = self._session_factories[connection_id]
         session = session_factory()
         try:
             yield session

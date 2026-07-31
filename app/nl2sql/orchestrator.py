@@ -9,39 +9,39 @@ le Protocol BaseAgent dans app/rag/interfaces.py :
   - attribut source_type: str
   - async def run(query, routing) -> AgentResult
 
-Pipeline complet exécuté à chaque question :
-  schema_cache.get_or_load()
-    → query_generator.generate_sql()
-    → query_validator.validate()
-    → query_executor.execute()  [si valide]
-    → query_optimizer.suggest()  [si lent/tronqué/rejeté]
-    → response_formatter.format()
-    → query_logger.log()
-
-Toutes les opérations synchrones (connection.py, query_executor.py)
-sont déportées via asyncio.to_thread() pour ne jamais bloquer l'event
-loop FastAPI partagé avec le reste du pipeline RAG.
+CORRECTIF FINAL : cette version n'exécute plus JAMAIS de SQL contre une
+vraie base cible. Phase actuelle du projet = dump schema-only (sans
+données, sans connexion persistante — sandbox détruit après scan). Le
+pipeline utilise uniquement le schéma déjà scanné et stocké dans la
+base interne InsightHub (schema_store), résolu dynamiquement depuis le
+connecteur SQL actuellement actif (is_enabled=True) plutôt qu'un
+connection_id figé "default". Pour chaque question :
+  - le SQL est généré à partir du schéma stocké
+  - la réponse retournée est TOUJOURS le SQL généré + un message
+    explicite indiquant qu'un résultat réel nécessite une base
+    connectée (cf. décision validée : Type 2 = SQL + notice, pas
+    d'exécution simulée).
 """
 
 import asyncio
 import logging
 import time
 
+from app.admin.connectors.repository import ConnectorRepository
 from app.core.models import AgentResult, PreprocessedQuery, RetrievedChunk, RoutingDecision
 from app.db.database import AsyncSessionLocal
-from app.nl2sql.connection import target_connection_manager
 from app.nl2sql.models import NL2SQLConfig, QueryExecutionLog, SchemaScanResult
-from app.nl2sql.query_executor import QueryExecutor
 from app.nl2sql.query_generator import QueryGenerator
 from app.nl2sql.query_logger import QueryLogger
 from app.nl2sql.query_optimizer import QueryOptimizer
 from app.nl2sql.query_validator import QueryValidator
 from app.nl2sql.response_formatter import ResponseFormatter
 from app.nl2sql.schema_cache import SchemaCache
-from app.nl2sql.schema_scanner import SchemaScanner
 from app.nl2sql.schema_store import SchemaStore
 
 logger = logging.getLogger(__name__)
+
+_PREVIEW_NOTICE = "Cette requête retournera le résultat une fois la base connectée."
 
 
 class NL2SQLAgent:
@@ -55,17 +55,17 @@ class NL2SQLAgent:
         query_generator: QueryGenerator,
         query_optimizer: QueryOptimizer,
         response_formatter: ResponseFormatter,
+        connector_repository: ConnectorRepository | None = None,
     ):
         self._config = config
         self._schema_cache = schema_cache
-        self._schema_scanner = SchemaScanner()
         self._schema_store = SchemaStore()
         self._query_generator = query_generator
         self._query_validator = QueryValidator()
-        self._query_executor = QueryExecutor()
         self._query_optimizer = query_optimizer
         self._response_formatter = response_formatter
         self._query_logger = QueryLogger()
+        self._connector_repo = connector_repository or ConnectorRepository()
 
     async def run(
         self,
@@ -76,12 +76,24 @@ class NL2SQLAgent:
 
         try:
             async with AsyncSessionLocal() as db_session:
-                schema = await self._schema_cache.get_or_load(
-                    db_session, self._config.connection_id
+                # Résolution dynamique de la base active — plus jamais
+                # de connection_id figé.
+                active_connector = await self._connector_repo.get_active_sql_connector(
+                    db_session
                 )
 
+                if active_connector is None:
+                    return self._no_active_database_result(started_at)
+
+                connection_id = str(active_connector["id"])
+
+                # Le schéma vient UNIQUEMENT de schema_store (base
+                # interne InsightHub) — jamais de connexion à la base
+                # cible réelle à ce stade.
+                schema = await self._schema_cache.get_or_load(db_session, connection_id)
+
                 if schema is None:
-                    schema = await self._perform_scan(db_session)
+                    return self._no_schema_result(started_at)
 
                 sql = await self._query_generator.generate_sql(
                     query.cleaned_text, schema
@@ -90,50 +102,15 @@ class NL2SQLAgent:
 
                 if not validation.is_valid:
                     return await self._handle_rejected(
-                        db_session, query, schema, sql, validation.reason, started_at
+                        db_session, query, schema, sql, validation.reason, started_at, connection_id
                     )
 
-                outcome = await asyncio.to_thread(
-                    self._execute_sql, sql, schema.engine_dialect
-                )
-
-                status = self._determine_status(outcome)
-                suggestion = None
-                if status in ("optimized", "rejected"):
-                    suggestion = await self._query_optimizer.suggest(
-                        sql=sql,
-                        exec_time_ms=outcome.exec_time_ms,
-                        truncated=outcome.truncated,
-                        error_message=outcome.error_message,
-                    )
-
-                answer = await self._response_formatter.format(
-                    query.cleaned_text, outcome
-                )
-
-                await self._query_logger.log(
-                    db_session,
-                    QueryExecutionLog(
-                        connection_id=self._config.connection_id,
-                        natural_language_question=query.cleaned_text,
-                        generated_sql=sql,
-                        engine_dialect=schema.engine_dialect,
-                        status=status,
-                        exec_time_ms=outcome.exec_time_ms,
-                        suggested_improvement=suggestion,
-                        error_message=outcome.error_message,
-                    ),
-                )
-
-                latency_ms = (time.perf_counter() - started_at) * 1000
-                return self._build_agent_result(
-                    sql=sql,
-                    answer=answer,
-                    schema=schema,
-                    status=status,
-                    exec_time_ms=outcome.exec_time_ms,
-                    suggestion=suggestion,
-                    latency_ms=latency_ms,
+                # Toujours en mode preview : SQL généré + notice
+                # explicite, jamais d'exécution réelle à ce stade du
+                # projet (pas de données insérées, pas de connexion
+                # persistante conservée après le scan du dump).
+                return await self._preview_result(
+                    db_session, query, schema, sql, started_at, connection_id
                 )
 
         except Exception as exc:
@@ -147,57 +124,78 @@ class NL2SQLAgent:
             )
 
     # ------------------------------------------------------------
-    # API publique — utilisée par l'endpoint admin (app/api/router.py)
+    # Résultats spécifiques
     # ------------------------------------------------------------
 
-    async def rescan_schema(self) -> SchemaScanResult:
-        """
-        Force un re-scan du schéma de la base cible et le persiste
-        (store + cache), indépendamment de toute question utilisateur.
-        Ouvre sa propre session DB, dédiée à cet appel — c'est le point
-        d'entrée public à utiliser depuis un endpoint FastAPI, plutôt
-        que d'accéder aux méthodes internes de l'agent.
-        """
-        async with AsyncSessionLocal() as db_session:
-            return await self._perform_scan(db_session)
-
-    # ------------------------------------------------------------
-    # Étapes internes
-    # ------------------------------------------------------------
-
-    async def _perform_scan(self, db_session) -> SchemaScanResult:
-        engine = await asyncio.to_thread(
-            target_connection_manager.get_engine, self._config
+    def _no_active_database_result(self, started_at) -> AgentResult:
+        latency_ms = (time.perf_counter() - started_at) * 1000
+        chunk = RetrievedChunk(
+            source_type=self.source_type,
+            document_id="sql-no-active-db",
+            chunk_id="sql-no-active-db",
+            content=(
+                "Aucune base de données n'est actuellement active. "
+                "Activez une base dans la section 'Bases de données' "
+                "pour poser des questions dessus."
+            ),
+            metadata={"status": "no_active_connection"},
+            sql_score=1.0,
         )
-        schema = await asyncio.to_thread(
-            self._schema_scanner.scan, engine, self._config.connection_id
+        return AgentResult(source_type=self.source_type, chunks=[chunk], latency_ms=latency_ms)
+
+    def _no_schema_result(self, started_at) -> AgentResult:
+        latency_ms = (time.perf_counter() - started_at) * 1000
+        chunk = RetrievedChunk(
+            source_type=self.source_type,
+            document_id="sql-no-schema",
+            chunk_id="sql-no-schema",
+            content="Le schéma de cette base n'a pas encore été scanné.",
+            metadata={"status": "no_schema"},
+            sql_score=1.0,
         )
-        await self._schema_cache.refresh(db_session, schema)
-        return schema
+        return AgentResult(source_type=self.source_type, chunks=[chunk], latency_ms=latency_ms)
 
-    def _execute_sql(self, sql: str, dialect: str):
-        with target_connection_manager.get_session(self._config) as session:
-            return self._query_executor.execute(session, sql, dialect)
+    async def _preview_result(
+        self, db_session, query, schema, sql, started_at, connection_id
+    ) -> AgentResult:
+        answer = (
+            f"Voici la requête SQL générée pour votre question :\n\n"
+            f"```sql\n{sql}\n```\n\n"
+            f"{_PREVIEW_NOTICE}"
+        )
 
-    def _determine_status(self, outcome) -> str:
-        if not outcome.success:
-            return "rejected"
-        if outcome.exec_time_ms >= self._config.latency_threshold_ms or outcome.truncated:
-            return "optimized"
-        return "accepted"
+        await self._query_logger.log(
+            db_session,
+            QueryExecutionLog(
+                connection_id=connection_id,
+                natural_language_question=query.cleaned_text,
+                generated_sql=sql,
+                engine_dialect=schema.engine_dialect,
+                status="preview",
+                error_message=None,
+            ),
+        )
+
+        latency_ms = (time.perf_counter() - started_at) * 1000
+        chunk = RetrievedChunk(
+            source_type=self.source_type,
+            document_id=f"sql-{connection_id}",
+            chunk_id=f"sql-{connection_id}-preview-{int(time.time() * 1000)}",
+            content=answer,
+            metadata={"sql_query": sql, "status": "preview", "engine": schema.engine_dialect},
+            sql_score=1.0,
+        )
+        return AgentResult(source_type=self.source_type, chunks=[chunk], latency_ms=latency_ms)
 
     async def _handle_rejected(
-        self, db_session, query, schema, sql, reason, started_at
+        self, db_session, query, schema, sql, reason, started_at, connection_id
     ) -> AgentResult:
-        """Cas où query_validator bloque la requête AVANT toute
-        exécution — aucun accès à la base cible n'a lieu, cohérent
-        avec la garantie READ-ONLY béton demandée."""
         logger.warning(f"[NL2SQLAgent] Requête rejetée par le validator : {reason}")
 
         await self._query_logger.log(
             db_session,
             QueryExecutionLog(
-                connection_id=self._config.connection_id,
+                connection_id=connection_id,
                 natural_language_question=query.cleaned_text,
                 generated_sql=sql,
                 engine_dialect=schema.engine_dialect,
@@ -209,33 +207,10 @@ class NL2SQLAgent:
         latency_ms = (time.perf_counter() - started_at) * 1000
         chunk = RetrievedChunk(
             source_type=self.source_type,
-            document_id=f"sql-{self._config.connection_id}",
-            chunk_id=f"sql-{self._config.connection_id}-rejected",
+            document_id=f"sql-{connection_id}",
+            chunk_id=f"sql-{connection_id}-rejected",
             content="Je ne peux pas exécuter cette requête pour des raisons de sécurité.",
             metadata={"sql_query": sql, "status": "rejected", "reason": reason},
-            sql_score=1.0,
-        )
-        return AgentResult(
-            source_type=self.source_type,
-            chunks=[chunk],
-            latency_ms=latency_ms,
-        )
-
-    def _build_agent_result(
-        self, sql, answer, schema, status, exec_time_ms, suggestion, latency_ms
-    ) -> AgentResult:
-        chunk = RetrievedChunk(
-            source_type=self.source_type,
-            document_id=f"sql-{self._config.connection_id}",
-            chunk_id=f"sql-{self._config.connection_id}-{int(time.time() * 1000)}",
-            content=answer,
-            metadata={
-                "sql_query": sql,
-                "engine": schema.engine_dialect,
-                "status": status,
-                "exec_time_ms": exec_time_ms,
-                "suggested_improvement": suggestion,
-            },
             sql_score=1.0,
         )
         return AgentResult(
