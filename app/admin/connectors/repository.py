@@ -192,6 +192,19 @@ class ConnectorRepository:
         await session.execute(text(query), params)
         await session.commit()
 
+    async def get_by_label(
+            self, session: AsyncSession, source_type: str, instance_label: str
+    ) -> Optional[dict[str, Any]]:
+        result = await session.execute(
+            text(
+                "SELECT * FROM connector_configs "
+                "WHERE source_type = :source_type AND instance_label = :instance_label"
+            ),
+            {"source_type": source_type, "instance_label": instance_label},
+        )
+        row = result.mappings().first()
+        return dict(row) if row else None
+
 
 def _to_json(value: dict[str, Any]) -> str:
     import json

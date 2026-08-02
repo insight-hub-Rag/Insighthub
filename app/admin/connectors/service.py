@@ -28,8 +28,7 @@ from app.admin.connectors.models import (
     SourceType,
     SyncStats,
 )
-from app.admin.connectors.repository import ConnectorRepository
-
+from app.admin.connectors.repository import ConnectorRepository, DuplicateInstanceLabelError
 _UPDATABLE_FIELDS = {"instance_label", "sync_scope", "sync_frequency_minutes"}
 
 _SQL_SOURCE_TYPES = {
@@ -68,14 +67,26 @@ class ConnectorService:
         self, session: AsyncSession, payload: ConnectorCreate
     ) -> ConnectorDetail:
         auth_encrypted = encrypt_auth_fields(payload.auth_fields)
-        row = await self._repo.create(
-            session,
-            source_type=payload.source_type,
-            instance_label=payload.instance_label,
-            auth_encrypted=auth_encrypted,
-            sync_scope=payload.sync_scope,
-            sync_frequency_minutes=int(payload.sync_frequency_minutes),
-        )
+        try:
+            row = await self._repo.create(
+                session,
+                source_type=payload.source_type,
+                instance_label=payload.instance_label,
+                auth_encrypted=auth_encrypted,
+                sync_scope=payload.sync_scope,
+                sync_frequency_minutes=int(payload.sync_frequency_minutes),
+            )
+        except DuplicateInstanceLabelError:
+            # STOPGAP : évite qu'un double-appel frontend (double-clic,
+            # effet React déclenché deux fois, etc.) ne fasse planter
+            # la création avec un 409 qui bloque ensuite la page —
+            # on renvoie l'instance déjà existante au lieu d'échouer.
+            existing = await self._repo.get_by_label(
+                session, payload.source_type, payload.instance_label
+            )
+            if existing:
+                return self._to_detail(existing)
+            raise
         self._sync_eventbridge_rule(row)
         return self._to_detail(row)
 
@@ -303,12 +314,17 @@ class ConnectorService:
     # Ingestion & Materialisation des Dumps SQL (Multi-moteur Sandbox)
     # ------------------------------------------------------------
     #
-    # CORRECTIF FINAL : plus aucune tentative de garder une connexion
-    # persistante vers la base cible. On scanne le schéma une fois
-    # (via sandbox temporaire ou fichier SQLite direct), on le stocke
-    # dans schema_store (base interne InsightHub), et c'est TOUT.
-    # NL2SQLAgent n'exécute plus jamais de SQL réel — il répond
-    # toujours à partir du schéma stocké (voir orchestrator.py).
+    # NOTE ARCHITECTURE : le sandbox (sandbox_manager.py) matérialise
+    # TOUJOURS le dump dans une base SQLite en mémoire en interne,
+    # quel que soit le moteur d'origine (mysql/postgresql/oracle/
+    # mssql) — c'est une simplification volontaire (pas de vrais
+    # conteneurs Docker par moteur), le SQL du dump étant réécrit à la
+    # volée pour être compatible SQLite. Conséquence directe :
+    # scanner.scan() lit engine.dialect.name sur ce moteur interne et
+    # retourne donc TOUJOURS "sqlite", peu importe le vrai moteur
+    # choisi par l'utilisateur. On corrige ça juste après le scan en
+    # forçant engine_dialect à la vraie valeur (engine_type), pour que
+    # le dashboard SQL Monitoring affiche le bon moteur.
     # ------------------------------------------------------------
 
     async def process_dump_upload(
@@ -342,10 +358,13 @@ class ConnectorService:
 
         # Création du connecteur AVANT le scan — son UUID devient le
         # connection_id unique utilisé pour stocker/retrouver le schéma.
+        import time as _time
+        unique_label = f"{file_name} ({_time.strftime('%H:%M:%S')}-{uuid.uuid4().hex[:4]})"
+
         connector_row = await self._repo.create(
             session,
             source_type=engine_type,
-            instance_label=file_name,
+            instance_label=unique_label,
             auth_encrypted=encrypt_auth_fields({}),
             sync_scope={},
             sync_frequency_minutes=0,
@@ -359,8 +378,8 @@ class ConnectorService:
         await self._repo.update(session, connector_row["id"], {"is_enabled": True})
 
         if is_sqlite_binary:
-            # Fichier SQLite temporaire, uniquement pour le scan — pas
-            # gardé comme connexion active pour l'exécution.
+            # Fichier SQLite réel — ici engine_type EST déjà "sqlite",
+            # aucune correction de dialecte nécessaire.
             sqlite_dir = Path(__file__).resolve().parent.parent.parent.parent / "sqlite_databases"
             sqlite_dir.mkdir(parents=True, exist_ok=True)
             safe_filename = f"sqlite_{uuid.uuid4().hex[:8]}.sqlite"
@@ -393,8 +412,8 @@ class ConnectorService:
             )
 
         # Dump texte (Postgres/MySQL/Oracle/SQL Server) : sandbox
-        # temporaire, détruit à la fin du `with` — seul le schéma
-        # scanné survit, dans schema_store.
+        # temporaire matérialisé en SQLite interne, détruit à la fin
+        # du `with` — seul le schéma scanné survit, dans schema_store.
         sql_text = file_bytes.decode("utf-8", errors="ignore")
 
         parser_instance = DumpParser()
@@ -405,6 +424,14 @@ class ConnectorService:
 
         with sandbox_mgr.create_sandbox(engine_type, sql_text, tenant_id=connection_id) as sandbox_engine:
             schema_scan = scanner.scan(sandbox_engine, connection_id=connection_id)
+
+            # CORRECTIF : le sandbox matérialise toujours en SQLite en
+            # interne (voir sandbox_manager.py), donc scanner.scan()
+            # retourne engine_dialect="sqlite" quel que soit le moteur
+            # d'origine du dump. On force ici la vraie valeur choisie/
+            # détectée (engine_type), pour que le monitoring affiche
+            # le bon moteur (mysql, postgresql, oracle, mssql).
+            schema_scan.engine_dialect = engine_type.lower()
 
             agent = build_nl2sql_agent()
             await agent._schema_cache.invalidate(connection_id)
@@ -425,3 +452,8 @@ class ConnectorService:
                 for t in schema_scan.tables
             ]
         )
+
+
+def _to_json(value: dict[str, Any]) -> str:
+    import json
+    return json.dumps(value)
