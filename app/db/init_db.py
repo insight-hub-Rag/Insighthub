@@ -155,4 +155,38 @@ async def initialize_database_schema() -> None:
             "ON chat_conversations (trashed, created_at DESC)"
         ))
 
+        # reports.* — dashboard "Rapport de productivité RH" (HR Analytics)
+        await session.execute(text("CREATE SCHEMA IF NOT EXISTS reports"))
+
+        await session.execute(text("""
+            CREATE TABLE IF NOT EXISTS reports.employees (
+                id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                display_name TEXT NOT NULL,
+                team         TEXT,
+                created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (display_name)
+            )
+        """))
+
+        await session.execute(text("""
+            CREATE TABLE IF NOT EXISTS reports.ticket_scores (
+                ticket_id           TEXT NOT NULL,
+                source_type         TEXT NOT NULL,
+                employee_id         UUID REFERENCES reports.employees(id),
+                is_closed           BOOLEAN NOT NULL,
+                resolution_hours    NUMERIC,
+                complexity_score    NUMERIC,
+                satisfaction_score  NUMERIC,
+                llm_reasoning       TEXT,
+                prompt_version      TEXT NOT NULL,
+                scored_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+                PRIMARY KEY (ticket_id, source_type)
+            )
+        """))
+
+        await session.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_ticket_scores_employee "
+            "ON reports.ticket_scores (employee_id)"
+        ))
+
         await session.commit()

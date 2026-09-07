@@ -25,25 +25,26 @@ class JiraTransformer(BaseTransformer):
             "assignee":    (fields.get("assignee") or {}).get("displayName", ""),
             "reporter":    (fields.get("reporter") or {}).get("displayName", ""),
             "issue_type":  fields.get("issuetype", {}).get("name", ""),
-            "created_at":  fields.get("created"),
-            "updated_at":  fields.get("updated"),
-            "comments":    JiraTransformer._extract_comments(
+            "created_at": fields.get("created"),
+            "updated_at": fields.get("updated"),
+            "resolved_at": fields.get("resolutiondate"),
+            "comments": JiraTransformer._extract_comments(
                 fields.get("comment", {}).get("comments", [])
             ),
         }
-
     @staticmethod
     def _chunk(normalized: dict) -> list[Chunk]:
         chunks      = []
         external_id = normalized["external_id"]
 
         metadata = {
-            "status":     normalized["status"],
-            "priority":   normalized["priority"],
-            "assignee":   normalized["assignee"],
-            "issue_type": normalized["issue_type"],
-            "created_at": normalized["created_at"],
-            "updated_at": normalized["updated_at"],
+            "status":      normalized["status"],
+            "priority":    normalized["priority"],
+            "assignee":    normalized["assignee"],
+            "issue_type":  normalized["issue_type"],
+            "created_at":  normalized["created_at"],
+            "updated_at":  normalized["updated_at"],
+            "resolved_at": normalized["resolved_at"],
         }
 
         # Chunk principal — statut et assigné inclus dans le texte
