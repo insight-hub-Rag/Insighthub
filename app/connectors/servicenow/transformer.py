@@ -34,6 +34,7 @@ class ServiceNowTransformer(BaseTransformer):
             "opened_by":   item.get("opened_by", "") or "",
             "created_at":  item.get("sys_created_on"),
             "updated_at":  item.get("sys_updated_on"),
+            "resolved_at": item.get("closed_at") or "",
             "notes": (
                 ServiceNowTransformer._parse_journal(item.get("comments", ""))
                 + ServiceNowTransformer._parse_journal(item.get("work_notes", ""))
@@ -52,6 +53,7 @@ class ServiceNowTransformer(BaseTransformer):
             "assigned_to": normalized["assigned_to"],
             "created_at":  normalized["created_at"],
             "updated_at":  normalized["updated_at"],
+            "resolved_at": normalized["resolved_at"],
         }
 
         main_content = (

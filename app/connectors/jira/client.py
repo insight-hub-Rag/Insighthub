@@ -79,7 +79,8 @@ class JiraClient:
             "jql": jql,
             "maxResults": max_results,
             "fields": "summary,description,comment,status,"
-                      "priority,assignee,reporter,created,updated,issuetype",
+                      "priority,assignee,reporter,created,updated,issuetype,"
+                      "resolutiondate",
         }
         # Ne JAMAIS envoyer nextPageToken=None/null explicitement : l'API
         # rejette un token null sur la première requête ("invalid or expired").
