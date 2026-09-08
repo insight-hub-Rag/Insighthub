@@ -84,6 +84,13 @@ class Settings(BaseSettings):
     nl2sql_schema_ttl_seconds: int     = 86400
     bedrock_text_model: str            = "amazon.nova-pro-v1:0"
 
+    # ── Authentification (JWT) ────────────────────────────────────────
+    jwt_secret_key: str = ""
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 30
+    refresh_token_expire_days: int = 7
+    cookie_secure: bool = True   # False uniquement en dev local (http:// sans TLS)
+
     # ── Properties ──────────────────────────────────────────────────────
     @property
     def jira_projects(self) -> list[str]:

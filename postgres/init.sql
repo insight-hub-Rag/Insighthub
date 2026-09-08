@@ -268,4 +268,21 @@ CREATE TABLE IF NOT EXISTS public.client_documents (
 
 INSERT INTO public.ingestion_sources (source_type, display_name, enabled) VALUES
     ('documents', 'Documents Clients', TRUE)
-ON CONFLICT (source_type) DO NOTHING;
+ON CONFLICT (source_type) DO NOTHING;
+
+-- ---------------------------------------------------------------------
+-- Authentification — comptes utilisateurs de l'application
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS public.users (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email           TEXT NOT NULL UNIQUE,
+    hashed_password TEXT NOT NULL,
+    full_name       TEXT NOT NULL,
+    role            TEXT NOT NULL DEFAULT 'user',
+    is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_login_at   TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_email ON public.users (email);
