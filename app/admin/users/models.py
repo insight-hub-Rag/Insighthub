@@ -8,6 +8,7 @@ liste TOUS les comptes — même absence volontaire de hashed_password.
 """
 
 from typing import Optional
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -19,6 +20,7 @@ class UserSummary(BaseModel):
     full_name: str
     role: str
     is_active: bool
+    created_at: datetime
 
 
 class UserUpdate(BaseModel):

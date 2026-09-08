@@ -28,7 +28,7 @@ async def list_users(
     _admin: dict[str, Any] = Depends(require_role("admin")),
 ) -> list[UserSummary]:
     result = await db.execute(
-        text("SELECT id, email, full_name, role, is_active FROM public.users ORDER BY role, full_name")
+        text("SELECT id, email, full_name, role, is_active, created_at FROM public.users ORDER BY role, full_name")
     )
     rows = result.mappings().all()
     return [UserSummary(**dict(row)) for row in rows]
@@ -71,7 +71,7 @@ async def update_user(
             UPDATE public.users
             SET {set_clause}
             WHERE id = :user_id
-            RETURNING id, email, full_name, role, is_active
+            RETURNING id, email, full_name, role, is_active, created_at
         """),
         {**updates, "user_id": user_id},
     )
