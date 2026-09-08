@@ -61,3 +61,8 @@ pytest-asyncio==0.23.6
 # ── api llm  ────────────────────────────────────
 groq==0.9.0
 boto3==1.34.0
+#_____________auth_________________
+passlib[bcrypt]
+bcrypt==4.0.1
+python-jose[cryptography]
+python-multipart
