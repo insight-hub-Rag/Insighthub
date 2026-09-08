@@ -30,6 +30,7 @@ from app.ingestion.pipeline import IngestionPipeline
 from app.rag.orchestrator import Orchestrator
 from app.nl2sql.factory import build_nl2sql_agent
 from app.nl2sql.query_logger import QueryLogger
+from app.reports.hr_analytics.router import router as hr_analytics_router
 from app.auth.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,8 @@ router = APIRouter()
 # mémoire grâce au lazy loading déjà en place dans chaque module.
 _orchestrator = Orchestrator()
 _query_logger = QueryLogger()
+
+router.include_router(hr_analytics_router)
 
 
 class SyncRequest(BaseModel):
