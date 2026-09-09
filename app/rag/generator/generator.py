@@ -166,12 +166,29 @@ class Generator:
                 "[Generator] Bypass LLM — chunk SQL passthrough "
                 f"(status={sql_passthrough_chunks[0].metadata.get('status')})"
             )
+            # Le LLM générateur est bypassé, mais NL2SQLAgent a bien
+            # fait un appel LLM (génération SQL) pour les statuts
+            # preview/rejected — ses tokens voyagent dans les
+            # métadonnées du chunk. no_active_connection/no_schema
+            # n'appellent aucun LLM : tokens à 0 par défaut.
+            sql_input_tokens = sum(
+                c.metadata.get("input_tokens", 0) for c in sql_passthrough_chunks
+            )
+            sql_output_tokens = sum(
+                c.metadata.get("output_tokens", 0) for c in sql_passthrough_chunks
+            )
+            sql_model = next(
+                (c.metadata.get("model") for c in sql_passthrough_chunks if c.metadata.get("model")),
+                "sql-passthrough",
+            )
             return RAGResponse(
                 question=question,
                 answer=answer,
                 sources=self._build_sources(chunks),
-                model="sql-passthrough",
+                model=sql_model,
                 total_chunks_searched=len(chunks),
+                input_tokens=sql_input_tokens,
+                output_tokens=sql_output_tokens,
             )
 
         context_chunks = build_context(chunks, max_tokens=max_context_tokens)
