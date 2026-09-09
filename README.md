@@ -215,5 +215,58 @@ uvicorn main:app --reload
 - Le reranking cross-encoder, bien que plus précis, ajoute une latence supplémentaire — appliqué uniquement sur un nombre restreint de candidats pour limiter son impact.
 - Le module NL2SQL présente des limitations propres, documentées séparément dans `app/nl2sql/`.
 
-bonjours
-bonjours
+## Authentification et rôles
+
+L'accès à l'application est protégé par authentification JWT (JSON Web Token). Toutes les routes de l'API, à l'exception de `/auth/*` et `/health`, exigent une session valide.
+
+### Principe
+
+- **Access token** — courte durée (30 min par défaut), transmis dans l'en-tête `Authorization: Bearer <token>` sur chaque requête. Jamais persisté côté client (ni `localStorage`, ni `sessionStorage`).
+- **Refresh token** — longue durée (7 jours par défaut), transmis via un cookie `httpOnly` posé automatiquement à la connexion, inaccessible en JavaScript. Permet d'obtenir un nouvel access token sans ressaisir les identifiants.
+- **Rôles** — chaque compte porte un rôle (`admin`, `rh` ou `user`), qui détermine à la fois la navigation affichée côté frontend et l'accès à certaines routes protégées côté backend (`app/auth/dependencies.py`, fonction `require_role`).
+
+### Endpoints
+
+| Méthode | Route | Description |
+|---|---|---|
+| POST | `/auth/login` | Authentifie un compte, renvoie un access token et pose le cookie refresh |
+| POST | `/auth/refresh` | Échange le cookie refresh contre un nouvel access token |
+| POST | `/auth/logout` | Supprime le cookie refresh |
+| GET | `/auth/me` | Renvoie le compte actuellement connecté |
+| GET | `/users` | Liste les comptes (réservé `admin`) |
+| PATCH | `/users/{id}` | Modifie le rôle ou le statut d'un compte (réservé `admin`) |
+
+### Configuration requise
+
+Ajouter au `.env` du backend :
+JWT_SECRET_KEY=...
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+REFRESH_TOKEN_EXPIRE_DAYS=7
+COOKIE_SECURE=false
+
+
+`JWT_SECRET_KEY` est propre à chaque environnement (jamais partagée, jamais versionnée) et se génère avec :
+
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+`COOKIE_SECURE` doit rester à `false` uniquement en développement local (`http://`, sans TLS) ; à passer à `true` dès qu'un déploiement s'effectue derrière HTTPS.
+
+### Créer un compte
+
+La création de compte n'est pas exposée via l'API — elle se fait par script, avec le rôle de son choix :
+
+```bash
+python -m scripts.create_user <email> <mot_de_passe> "<nom complet>" <role>
+```
+
+Exemple :
+
+```bash
+python -m scripts.create_user admin@insighthub.local MotDePasse123 "Prénom Nom" admin
+```
+
+Le script est idempotent : le relancer avec un email déjà existant n'a aucun effet.
+

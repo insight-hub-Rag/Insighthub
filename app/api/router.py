@@ -35,6 +35,7 @@ from app.reports.usage_analytics.router import router as usage_analytics_router
 from app.reports.usage_analytics.repository import UsageLogRepository
 from app.reports.usage_analytics.models import RequestLogEntry
 from app.reports.usage_analytics.cost_calculator import CostCalculator
+from app.auth.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -122,7 +123,10 @@ PIPELINE_FACTORIES = {
 }
 
 
-@router.get("/health")
+health_router = APIRouter()
+
+
+@health_router.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 
@@ -365,6 +369,12 @@ async def nl2sql_monitoring_queries(
 
 # ==================================================================
 # Chat history — persistance des conversations
+#
+# Toutes ces routes exigent get_current_user et transmettent
+# current_user["id"] à chat_history.py, qui filtre/vérifie
+# l'appartenance à chaque opération — voir app/db/chat_history.py
+# pour le détail de cette protection (jamais juste un filtre
+# d'affichage, un vrai contrôle d'accès aux données).
 # ==================================================================
 
 @router.get("/chat/history", summary="Récupérer l'historique des conversations")
@@ -372,10 +382,11 @@ async def get_chat_history(
     limit: int = 100,
     include_trashed: bool = False,
     db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ) -> dict:
     try:
         conversations = await chat_history_repo.get_conversations(
-            db, limit=limit, include_trashed=include_trashed
+            db, user_id=current_user["id"], limit=limit, include_trashed=include_trashed
         )
         return {"conversations": conversations}
     except Exception as exc:
@@ -387,9 +398,10 @@ async def get_chat_history(
 async def save_chat_conversation(
     request: ChatConversationCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ) -> dict:
     try:
-        saved = await chat_history_repo.save_conversation(db, request.model_dump())
+        saved = await chat_history_repo.save_conversation(db, current_user["id"], request.model_dump())
         return saved
     except Exception as exc:
         traceback.print_exc()
@@ -401,10 +413,11 @@ async def update_chat_conversation(
     conv_id: str,
     request: ChatConversationPatch,
     db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ) -> dict:
     try:
         patch = {k: v for k, v in request.model_dump().items() if v is not None}
-        updated = await chat_history_repo.update_conversation(db, conv_id, patch)
+        updated = await chat_history_repo.update_conversation(db, conv_id, current_user["id"], patch)
         if updated is None:
             raise HTTPException(status_code=404, detail=f"Conversation '{conv_id}' introuvable")
         return updated
@@ -419,9 +432,10 @@ async def update_chat_conversation(
 async def delete_chat_conversation(
     conv_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ) -> dict:
     try:
-        deleted = await chat_history_repo.delete_conversation(db, conv_id)
+        deleted = await chat_history_repo.delete_conversation(db, conv_id, current_user["id"])
         if not deleted:
             raise HTTPException(status_code=404, detail=f"Conversation '{conv_id}' introuvable")
         return {"status": "deleted", "id": conv_id}
@@ -447,9 +461,10 @@ class ChatMessageCreate(BaseModel):
 async def get_conversation_messages(
     conv_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ) -> dict:
     try:
-        messages = await chat_history_repo.get_messages(db, conv_id)
+        messages = await chat_history_repo.get_messages(db, current_user["id"], conv_id)
         return {"messages": messages}
     except Exception as exc:
         traceback.print_exc()
@@ -461,11 +476,14 @@ async def save_conversation_message(
     conv_id: str,
     request: ChatMessageCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ) -> dict:
     try:
         if request.conversation_id != conv_id:
             raise HTTPException(status_code=400, detail="conv_id mismatch")
-        saved = await chat_history_repo.save_message(db, request.model_dump())
+        saved = await chat_history_repo.save_message(db, current_user["id"], request.model_dump())
+        if saved is None:
+            raise HTTPException(status_code=404, detail=f"Conversation '{conv_id}' introuvable")
         return saved
     except HTTPException:
         raise
