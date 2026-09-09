@@ -95,14 +95,15 @@ class NL2SQLAgent:
                 if schema is None:
                     return self._no_schema_result(started_at)
 
-                sql = await self._query_generator.generate_sql(
+                sql, input_tokens, output_tokens = await self._query_generator.generate_sql(
                     query.cleaned_text, schema
                 )
                 validation = self._query_validator.validate(sql)
 
                 if not validation.is_valid:
                     return await self._handle_rejected(
-                        db_session, query, schema, sql, validation.reason, started_at, connection_id
+                        db_session, query, schema, sql, validation.reason, started_at,
+                        connection_id, input_tokens, output_tokens,
                     )
 
                 # Toujours en mode preview : SQL généré + notice
@@ -110,7 +111,8 @@ class NL2SQLAgent:
                 # projet (pas de données insérées, pas de connexion
                 # persistante conservée après le scan du dump).
                 return await self._preview_result(
-                    db_session, query, schema, sql, started_at, connection_id
+                    db_session, query, schema, sql, started_at, connection_id,
+                    input_tokens, output_tokens,
                 )
 
         except Exception as exc:
@@ -156,7 +158,8 @@ class NL2SQLAgent:
         return AgentResult(source_type=self.source_type, chunks=[chunk], latency_ms=latency_ms)
 
     async def _preview_result(
-        self, db_session, query, schema, sql, started_at, connection_id
+        self, db_session, query, schema, sql, started_at, connection_id,
+        input_tokens: int = 0, output_tokens: int = 0,
     ) -> AgentResult:
         answer = (
             f"Voici la requête SQL générée pour votre question :\n\n"
@@ -182,13 +185,21 @@ class NL2SQLAgent:
             document_id=f"sql-{connection_id}",
             chunk_id=f"sql-{connection_id}-preview-{int(time.time() * 1000)}",
             content=answer,
-            metadata={"sql_query": sql, "status": "preview", "engine": schema.engine_dialect},
+            metadata={
+                "sql_query": sql,
+                "status": "preview",
+                "engine": schema.engine_dialect,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "model": self._query_generator.model_id,
+            },
             sql_score=1.0,
         )
         return AgentResult(source_type=self.source_type, chunks=[chunk], latency_ms=latency_ms)
 
     async def _handle_rejected(
-        self, db_session, query, schema, sql, reason, started_at, connection_id
+        self, db_session, query, schema, sql, reason, started_at, connection_id,
+        input_tokens: int = 0, output_tokens: int = 0,
     ) -> AgentResult:
         logger.warning(f"[NL2SQLAgent] Requête rejetée par le validator : {reason}")
 
@@ -210,7 +221,14 @@ class NL2SQLAgent:
             document_id=f"sql-{connection_id}",
             chunk_id=f"sql-{connection_id}-rejected",
             content="Je ne peux pas exécuter cette requête pour des raisons de sécurité.",
-            metadata={"sql_query": sql, "status": "rejected", "reason": reason},
+            metadata={
+                "sql_query": sql,
+                "status": "rejected",
+                "reason": reason,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "model": self._query_generator.model_id,
+            },
             sql_score=1.0,
         )
         return AgentResult(

@@ -14,10 +14,11 @@ retournés par Generator dans certains cas de bypass/échec) coûtent
 0$ — cohérent, puisqu'aucun appel LLM n'a réellement eu lieu.
 """
 
-# $ par MILLION de tokens : (prix_input, prix_output)
-PRICING_PER_MILLION_TOKENS: dict[str, tuple[float, float]] = {
-    "bedrock-nova-micro":      (0.035, 0.14),  # AWS Bedrock — us.amazon.nova-micro-v1:0
-    "llama-3.3-70b-versatile": (0.59, 0.79),   # Groq — settings.groq_model
+# Prix en $ par MILLION de tokens : {model_id: (prix_input, prix_output)}
+_PRICING_PER_MILLION_TOKENS: dict[str, tuple[float, float]] = {
+    "bedrock-nova-micro":         (0.035, 0.14),
+    "llama-3.3-70b-versatile":    (0.59, 0.79),
+    "amazon.nova-pro-v1:0":       (0.80, 3.20),  # utilisé par NL2SQL (query_generator.py)
 }
 
 
@@ -25,7 +26,7 @@ class CostCalculator:
 
     @staticmethod
     def compute_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
-        pricing = PRICING_PER_MILLION_TOKENS.get(model)
+        pricing = _PRICING_PER_MILLION_TOKENS.get(model)
         if pricing is None:
             return 0.0
 

@@ -32,7 +32,17 @@ class QueryGenerator:
         self._model_id = bedrock_model_id
         self._client = boto3.client("bedrock-runtime", region_name=aws_region)
 
-    async def generate_sql(self, question: str, schema: SchemaScanResult) -> str:
+    @property
+    def model_id(self) -> str:
+        return self._model_id
+
+    async def generate_sql(
+        self, question: str, schema: SchemaScanResult
+    ) -> tuple[str, int, int]:
+        """Retourne (sql, input_tokens, output_tokens) — les tokens
+        servent au tracking de coût LLM (dashboard Usage Analytics),
+        remontés jusqu'à app/rag/generator/generator.py via les
+        métadonnées du chunk SQL passthrough."""
         prompt = self._build_prompt(question, schema)
 
         response = self._client.converse(
@@ -44,8 +54,15 @@ class QueryGenerator:
         raw_output = response["output"]["message"]["content"][0]["text"]
         sql = self._extract_sql(raw_output)
 
-        logger.info(f"[QueryGenerator] SQL généré pour question='{question[:80]}...' → {sql}")
-        return sql
+        usage = response.get("usage", {})
+        input_tokens = usage.get("inputTokens", 0)
+        output_tokens = usage.get("outputTokens", 0)
+
+        logger.info(
+            f"[QueryGenerator] SQL généré pour question='{question[:80]}...' → {sql} "
+            f"(tokens in={input_tokens} out={output_tokens})"
+        )
+        return sql, input_tokens, output_tokens
 
     def _build_prompt(self, question: str, schema: SchemaScanResult) -> str:
         schema_description = self._describe_schema(schema)
