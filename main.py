@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import router, health_router
 from app.admin.connectors.router import router as connectors_router
 from app.admin.users.router import router as users_router
+from app.dashboard.router import router as dashboard_router
 from app.documents.router import router as documents_router
 from app.auth.router import router as auth_router
 from app.auth.dependencies import get_current_user
@@ -55,4 +56,5 @@ app.include_router(health_router)
 app.include_router(router, dependencies=[Depends(get_current_user)])
 app.include_router(connectors_router, dependencies=[Depends(get_current_user)])
 app.include_router(users_router, dependencies=[Depends(get_current_user)])
+app.include_router(dashboard_router, dependencies=[Depends(get_current_user)])
 app.include_router(documents_router, dependencies=[Depends(get_current_user)])
