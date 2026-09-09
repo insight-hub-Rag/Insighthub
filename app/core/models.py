@@ -61,6 +61,8 @@ class RAGResponse:
     sources:     list
     model:       str
     total_chunks_searched: int
+    input_tokens:  int = 0   # tokens envoyés au LLM (0 si pas d'appel LLM réel)
+    output_tokens: int = 0   # tokens générés par le LLM
 
 
 # ==================================================================

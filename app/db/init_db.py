@@ -305,6 +305,27 @@ async def initialize_database_schema() -> None:
             "ON reports.ticket_scores (employee_id)"
         ))
 
+        # reports.request_logs — dashboard "Requêtes & usage" (coût LLM
+        # par requête). Additive, ne touche à aucune table existante.
+        await session.execute(text("""
+                    CREATE TABLE IF NOT EXISTS reports.request_logs (
+                        id             SERIAL PRIMARY KEY,
+                        question       TEXT NOT NULL,
+                        source         TEXT NOT NULL,
+                        latency_ms     DOUBLE PRECISION NOT NULL DEFAULT 0,
+                        model          TEXT NOT NULL DEFAULT '',
+                        input_tokens   INTEGER NOT NULL DEFAULT 0,
+                        output_tokens  INTEGER NOT NULL DEFAULT 0,
+                        cost_usd       NUMERIC NOT NULL DEFAULT 0,
+                        created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                """))
+
+        await session.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_request_logs_created_at "
+            "ON reports.request_logs (created_at DESC)"
+        ))
+
         await session.commit()
 
         # client_documents — table des documents uploadés (écran "Documents").

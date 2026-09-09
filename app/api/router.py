@@ -31,6 +31,10 @@ from app.rag.orchestrator import Orchestrator
 from app.nl2sql.factory import build_nl2sql_agent
 from app.nl2sql.query_logger import QueryLogger
 from app.reports.hr_analytics.router import router as hr_analytics_router
+from app.reports.usage_analytics.router import router as usage_analytics_router
+from app.reports.usage_analytics.repository import UsageLogRepository
+from app.reports.usage_analytics.models import RequestLogEntry
+from app.reports.usage_analytics.cost_calculator import CostCalculator
 from app.auth.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -42,8 +46,10 @@ router = APIRouter()
 # mémoire grâce au lazy loading déjà en place dans chaque module.
 _orchestrator = Orchestrator()
 _query_logger = QueryLogger()
+_usage_log_repository = UsageLogRepository()
 
 router.include_router(hr_analytics_router)
+router.include_router(usage_analytics_router)
 
 
 class SyncRequest(BaseModel):
@@ -157,7 +163,10 @@ async def sync_source(source: str, request: SyncRequest) -> dict:
 
 
 @router.post("/search", summary="Recherche RAG (pipeline orchestrateur complet)")
-async def search(request: SearchRequest) -> dict:
+async def search(
+    request: SearchRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
     t_start = time.time()
 
     try:
@@ -166,6 +175,25 @@ async def search(request: SearchRequest) -> dict:
             user_id  = request.user_id,
         )
         t_total = time.time() - t_start
+        latency_ms = round(t_total * 1000, 1)
+
+        cost_usd = CostCalculator.compute_cost_usd(
+            model=response.model,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+        )
+        await _usage_log_repository.log(
+            db,
+            RequestLogEntry(
+                question=response.question,
+                source=(response.sources[0]["source_type"] if response.sources else "unknown"),
+                latency_ms=latency_ms,
+                model=response.model,
+                input_tokens=response.input_tokens,
+                output_tokens=response.output_tokens,
+                cost_usd=cost_usd,
+            ),
+        )
 
         return {
             "question":              response.question,
@@ -174,7 +202,12 @@ async def search(request: SearchRequest) -> dict:
             "sources":               response.sources,
             "total_chunks_searched": response.total_chunks_searched,
             "performance": {
-                "total_ms": round(t_total * 1000, 1),
+                "total_ms": latency_ms,
+            },
+            "usage": {
+                "input_tokens": response.input_tokens,
+                "output_tokens": response.output_tokens,
+                "cost_usd": cost_usd,
             },
         }
 

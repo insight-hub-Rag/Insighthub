@@ -105,9 +105,9 @@ class Generator:
         ]
 
         if settings.use_bedrock and settings.aws_access_key_id:
-            answer, model = self._generate_bedrock(messages)
+            answer, model, input_tokens, output_tokens = self._generate_bedrock(messages)
         else:
-            answer, model = self._generate_groq(messages)
+            answer, model, input_tokens, output_tokens = self._generate_groq(messages)
 
         logger.info("[Generator] Réponse hors-scope générée directement")
 
@@ -117,6 +117,8 @@ class Generator:
             sources=[],
             model=model,
             total_chunks_searched=0,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
     def generate(
@@ -178,10 +180,10 @@ class Generator:
         t0 = time.time()
         if settings.use_bedrock and settings.aws_access_key_id:
             logger.info("[Generator] Utilisation AWS Bedrock")
-            answer, model = self._generate_bedrock(messages)
+            answer, model, input_tokens, output_tokens = self._generate_bedrock(messages)
         else:
             logger.info("[Generator] Utilisation Groq")
-            answer, model = self._generate_groq(messages)
+            answer, model, input_tokens, output_tokens = self._generate_groq(messages)
         t_llm = time.time() - t0
 
         logger.info(f"[Generator] LLM={t_llm*1000:.1f}ms | model={model}")
@@ -204,6 +206,8 @@ class Generator:
             sources=sources,
             model=model,
             total_chunks_searched=len(chunks),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
     @staticmethod
@@ -257,7 +261,7 @@ class Generator:
                 return round(score, 4)
         return 0.0
 
-    def _generate_groq(self, messages: list[dict]) -> tuple[str, str]:
+    def _generate_groq(self, messages: list[dict]) -> tuple[str, str, int, int]:
         try:
             from groq import Groq
             client = Groq(api_key=settings.groq_api_key)
@@ -268,13 +272,15 @@ class Generator:
                 max_tokens=300,
             )
             answer = response.choices[0].message.content
+            input_tokens = response.usage.prompt_tokens if response.usage else 0
+            output_tokens = response.usage.completion_tokens if response.usage else 0
             logger.info(f"[Generator] Groq OK | model={settings.groq_model}")
-            return answer, settings.groq_model
+            return answer, settings.groq_model, input_tokens, output_tokens
         except Exception as e:
             logger.error(f"[Generator] Erreur Groq : {e}")
-            return f"Erreur : {str(e)}", "error"
+            return f"Erreur : {str(e)}", "error", 0, 0
 
-    def _generate_bedrock(self, messages: list[dict]) -> tuple[str, str]:
+    def _generate_bedrock(self, messages: list[dict]) -> tuple[str, str, int, int]:
         try:
             import boto3
             client = boto3.client(
@@ -292,8 +298,11 @@ class Generator:
                 inferenceConfig={"maxTokens": 300, "temperature": 0.1},
             )
             answer = response["output"]["message"]["content"][0]["text"]
+            usage = response.get("usage", {})
+            input_tokens = usage.get("inputTokens", 0)
+            output_tokens = usage.get("outputTokens", 0)
             logger.info("[Generator] Bedrock Nova Micro OK")
-            return answer, "bedrock-nova-micro"
+            return answer, "bedrock-nova-micro", input_tokens, output_tokens
         except Exception as e:
             logger.error(f"[Generator] Erreur Bedrock : {e} — Fallback Groq")
             return self._generate_groq(messages)
