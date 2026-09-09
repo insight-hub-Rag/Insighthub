@@ -43,3 +43,24 @@ CREATE TABLE IF NOT EXISTS reports.ticket_scores (
 
 CREATE INDEX IF NOT EXISTS idx_ticket_scores_employee
     ON reports.ticket_scores (employee_id);
+
+-- ------------------------------------------------------------
+-- REQUEST_LOGS — dashboard "Requêtes & usage" (Usage Analytics).
+-- Une ligne par requête /search : latence, tokens et coût LLM
+-- calculé (voir app/reports/usage_analytics/cost_calculator.py).
+-- ------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS reports.request_logs (
+    id             SERIAL PRIMARY KEY,
+    question       TEXT NOT NULL,
+    source         TEXT NOT NULL,
+    latency_ms     DOUBLE PRECISION NOT NULL DEFAULT 0,
+    input_tokens   INTEGER NOT NULL DEFAULT 0,
+    output_tokens  INTEGER NOT NULL DEFAULT 0,
+    cost_usd       NUMERIC NOT NULL DEFAULT 0,
+    model          TEXT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_request_logs_created_at
+    ON reports.request_logs (created_at DESC);
