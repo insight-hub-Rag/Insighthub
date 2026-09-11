@@ -1,5 +1,3 @@
-
-
 import logging
 import time
 
@@ -39,10 +37,19 @@ class Orchestrator:
         user_id: str | None = None,
         forced_sources: list[str] | None = None,
         forced_instance_id: str | None = None,
+        forced_external_id: str | None = None,
         conversation_history: list[dict] | None = None,
     ) -> RAGResponse:
         """
         `forced_sources` : utilisé UNIQUEMENT par le chat scopé specifique
+        `forced_external_id` : scope le chat à UN document/enregistrement
+        précis (ex: un document client) — réutilise le court-circuit de
+        recherche exacte déjà existant pour un identifiant détecté par le
+        Rule Router (routing.filters["external_id"]), plutôt que le
+        mécanisme "connector_instance_id" (recherche floue + filtrage
+        post-fusion) utilisé pour le chat scopé aux connecteurs. Plus
+        direct : récupère tous les chunks de CE document, sans recherche
+        floue ni reranking (sql_score=1.0 garanti par search_by_id).
         """
         t_start = time.time()
 
@@ -72,12 +79,19 @@ class Orchestrator:
         if forced_instance_id is not None:
             routing.filters = {**routing.filters, "connector_instance_id": forced_instance_id}
 
+        if forced_external_id is not None:
+            # Réutilise le court-circuit de recherche exacte de BaseAgent
+            # (routing.filters["external_id"]) — pas de recherche floue,
+            # récupération directe de tous les chunks du document ciblé.
+            routing.filters = {**routing.filters, "external_id": forced_external_id}
+
         logger.info(
             f"[Orchestrator] Routage : sources={routing.sources} "
             f"via={routing.router_used} confiance={routing.confidence} "
             f"in_scope={routing.in_scope}"
             + (" (source forcée)" if forced_sources is not None else "")
             + (" (instance forcée)" if forced_instance_id is not None else "")
+            + (" (document forcé)" if forced_external_id is not None else "")
         )
 
         # 2bis. Question hors périmètre entreprise — inutile de lancer
