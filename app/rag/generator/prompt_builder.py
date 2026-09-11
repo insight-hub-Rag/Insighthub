@@ -58,7 +58,16 @@ def _build_context(chunks: list[RetrievedChunk]) -> str:
     parts = []
     for i, chunk in enumerate(chunks, 1):
         source_label = _source_label(chunk.source_type, chunk.document_id)
-        parts.append(f"[{i}] {source_label}\n{chunk.content[:500]}")
+        # CORRECTIF : le contenu n'est plus tronqué à 500 caractères ici.
+        # context_builder.build_context() a déjà sélectionné, en amont,
+        # uniquement les chunks qui tiennent dans le budget de tokens
+        # réel (max_tokens, ~2000 par défaut) SANS jamais couper un
+        # chunk en plein mot — retronquer arbitrairement à 500
+        # caractères ici perdait des passages entiers pour les sources
+        # à chunks longs (documents clients : ~1500 caractères par
+        # chunk, largement au-dessus de 500), y compris des articles
+        # entiers d'un règlement intérieur par exemple.
+        parts.append(f"[{i}] {source_label}\n{chunk.content}")
 
     return "\n\n".join(parts)
 

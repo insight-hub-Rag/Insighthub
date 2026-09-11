@@ -36,6 +36,7 @@ except ImportError:
     _HAS_BOTO3 = False
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel
 
 from config import settings
 from app.db.database import get_db
@@ -45,6 +46,7 @@ from app.documents.extractor import extract_and_clean
 from app.documents.models import DocumentOut, DocumentStatus, DocumentUploadResponse
 from app.documents.repository import DocumentRepository
 from app.ingestion.embeddings.embedder import Embedder
+from app.auth.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/documents", tags=["Documents Clients"])
@@ -332,4 +334,99 @@ async def reindex_document(
         status_code=501,
         detail="La ré-indexation nécessite que le fichier soit configuré dans S3. "
                "Veuillez re-uploader le document."
+    )
+
+
+# ── Chat de test scopé aux documents ────────────────────────────────────────
+# Réutilise l'orchestrateur RAG existant, exactement comme le chat de test
+# des connecteurs (app/admin/connectors/router.py) — même instance partagée,
+# pour éviter de recharger les modèles (embedder, cross-encoder) à chaque
+# appel.
+
+from app.api.router import _orchestrator
+
+
+class DocumentsChatHistoryItem(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
+
+
+class DocumentsChatRequest(BaseModel):
+    question: str
+    history: list[DocumentsChatHistoryItem] = []
+
+
+class DocumentsChatSource(BaseModel):
+    chunk_id: str
+    source_type: str
+    document_id: str
+    title: str
+    score: float
+
+
+class DocumentsChatResponse(BaseModel):
+    question: str
+    standalone_question: str
+    answer: str
+    model: str
+    sources: list[DocumentsChatSource]
+
+
+@router.post(
+    "/{doc_id}/test-chat",
+    response_model=DocumentsChatResponse,
+    summary="Chat de test scopé à UN document précis",
+)
+async def test_chat_single_document(
+    doc_id: str,
+    payload: DocumentsChatRequest,
+    session: AsyncSession = Depends(get_db),
+    _user: dict = Depends(get_current_user),
+):
+    doc = await _repo.get_by_id(session, doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document introuvable")
+    if doc.status != DocumentStatus.INDEXED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Ce document n'est pas encore indexé (statut actuel : {doc.status}).",
+        )
+
+    response = await _orchestrator.ask(
+        question=payload.question,
+        forced_sources=["documents"],
+        forced_external_id=doc_id,
+        conversation_history=[item.model_dump() for item in payload.history],
+    )
+
+    return DocumentsChatResponse(
+        question=payload.question,
+        standalone_question=response.question,
+        answer=response.answer,
+        model=response.model,
+        sources=response.sources,
+    )
+
+
+@router.post(
+    "/test-chat",
+    response_model=DocumentsChatResponse,
+    summary="Chat de test scopé à TOUS les documents clients",
+)
+async def test_chat_all_documents(
+    payload: DocumentsChatRequest,
+    _user: dict = Depends(get_current_user),
+):
+    response = await _orchestrator.ask(
+        question=payload.question,
+        forced_sources=["documents"],
+        conversation_history=[item.model_dump() for item in payload.history],
+    )
+
+    return DocumentsChatResponse(
+        question=payload.question,
+        standalone_question=response.question,
+        answer=response.answer,
+        model=response.model,
+        sources=response.sources,
     )
